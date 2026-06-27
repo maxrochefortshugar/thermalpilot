@@ -94,11 +94,11 @@ package final class FanController {
     private func readFloatReading(_ key: FanKey) throws -> (reading: FanReading, value: Float) {
         let reading = try hardware.read(key)
         guard reading.type == "flt ",
-              reading.size >= 4,
-              reading.bytes.count >= 4,
+              reading.size == 4,
+              reading.bytes.count == 4,
               let value = FanEncoding.floatValue(reading.bytes)
         else {
-            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected flt size >= 4")
+            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected flt size == 4")
         }
         return (reading, value)
     }
@@ -110,21 +110,21 @@ package final class FanController {
     private func readUInt8Reading(_ key: FanKey) throws -> (reading: FanReading, value: UInt8) {
         let reading = try hardware.read(key)
         guard reading.type == "ui8 ",
-              reading.size >= 1,
+              reading.size == 1,
+              reading.bytes.count == 1,
               let value = reading.bytes.first
         else {
-            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ui8 size >= 1")
+            throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ui8 size == 1")
         }
         return (reading, value)
     }
 
     private func readASCII(_ key: FanKey) throws -> String {
         let reading = try hardware.read(key)
-        let bytes = Array(reading.bytes.prefix(Int(reading.size)))
         guard reading.type == "ch8*",
-              reading.size >= 1,
-              !bytes.isEmpty,
-              let value = String(bytes: bytes.prefix { $0 != 0 }, encoding: .ascii),
+              reading.size > 0,
+              reading.bytes.count == Int(reading.size),
+              let value = String(bytes: reading.bytes.prefix { $0 != 0 }, encoding: .ascii),
               !value.isEmpty
         else {
             throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ch8* ASCII bytes")

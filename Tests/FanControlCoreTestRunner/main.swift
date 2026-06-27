@@ -199,26 +199,50 @@ func testStatusReportsEveryNonRecoveryValidationGate() throws {
 }
 
 func testStatusRejectsWrongTargetType() throws {
-    try expectStatusInvalidReading("wrong target type should fail status", key: "F0Tg", reason: "expected flt size >= 4") {
+    try expectStatusInvalidReading("wrong target type should fail status", key: "F0Tg", reason: "expected flt size == 4") {
         $0.setEntry("F0Tg", type: "ui8 ", size: 4, bytes: FanEncoding.float32LittleEndian(2_000))
     }
 }
 
+func testStatusRejectsWrongTargetSize() throws {
+    try expectStatusInvalidReading("wrong target size should fail status", key: "F0Tg") {
+        $0.setEntry("F0Tg", type: "flt ", size: 8, bytes: FanEncoding.float32LittleEndian(2_000) + [0, 0, 0, 0])
+    }
+}
+
 func testStatusRejectsWrongModeType() throws {
-    try expectStatusInvalidReading("wrong mode type should fail status", key: "F0Md", reason: "expected ui8 size >= 1") {
+    try expectStatusInvalidReading("wrong mode type should fail status", key: "F0Md", reason: "expected ui8 size == 1") {
         $0.setEntry("F0Md", type: "flt ", size: 1, bytes: [3])
     }
 }
 
+func testStatusRejectsWrongModeSize() throws {
+    try expectStatusInvalidReading("wrong mode size should fail status", key: "F0Md") {
+        $0.setEntry("F0Md", type: "ui8 ", size: 2, bytes: [3, 0])
+    }
+}
+
 func testStatusRejectsWrongFanCountType() throws {
-    try expectStatusInvalidReading("wrong FNum type should fail status", key: "FNum", reason: "expected ui8 size >= 1") {
+    try expectStatusInvalidReading("wrong FNum type should fail status", key: "FNum", reason: "expected ui8 size == 1") {
         $0.setEntry("FNum", type: "flt ", size: 1, bytes: [2])
+    }
+}
+
+func testStatusRejectsWrongFanCountSize() throws {
+    try expectStatusInvalidReading("wrong FNum size should fail status", key: "FNum") {
+        $0.setEntry("FNum", type: "ui8 ", size: 2, bytes: [2, 0])
     }
 }
 
 func testStatusRejectsWrongPlatformType() throws {
     try expectStatusInvalidReading("wrong RPlt type should fail status", key: "RPlt", reason: "expected ch8* ASCII bytes") {
         $0.setEntry("RPlt", type: "ui8 ", size: 6, bytes: Array("j616c".utf8) + [0])
+    }
+}
+
+func testStatusRejectsPlatformSizeMismatch() throws {
+    try expectStatusInvalidReading("RPlt size mismatch should fail status", key: "RPlt") {
+        $0.setEntry("RPlt", type: "ch8*", size: 8, bytes: Array("j616c".utf8) + [0])
     }
 }
 
@@ -556,6 +580,19 @@ func expectStatusInvalidReading(_ message: String, key: String, reason: String, 
     })
 }
 
+func expectStatusInvalidReading(_ message: String, key: String, mutate: (FakeSMC) -> Void) throws {
+    let smc = FakeSMC.mac165()
+    mutate(smc)
+    let controller = FanController(hardware: smc, capability: fullyValidatedCapability(), clock: TestClock())
+
+    try expectThrows(message, {
+        _ = try controller.status()
+    }, matching: { error in
+        guard case .invalidReading(let actualKey, _) = error as? FanControlError else { return false }
+        return actualKey == key
+    })
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("Core boundary", testCoreBoundary),
     ("Mac16,5 capability", testMac165Capability),
@@ -574,9 +611,13 @@ let tests: [(String, () throws -> Void)] = [
     ("Status all recovery flags and good hardware allows active control", testStatusAllRecoveryFlagsAndGoodHardwareAllowsActiveControl),
     ("Status reports every non-recovery validation gate", testStatusReportsEveryNonRecoveryValidationGate),
     ("Status rejects wrong target type", testStatusRejectsWrongTargetType),
+    ("Status rejects wrong target size", testStatusRejectsWrongTargetSize),
     ("Status rejects wrong mode type", testStatusRejectsWrongModeType),
+    ("Status rejects wrong mode size", testStatusRejectsWrongModeSize),
     ("Status rejects wrong FNum type", testStatusRejectsWrongFanCountType),
+    ("Status rejects wrong FNum size", testStatusRejectsWrongFanCountSize),
     ("Status rejects wrong RPlt type", testStatusRejectsWrongPlatformType),
+    ("Status rejects RPlt size mismatch", testStatusRejectsPlatformSizeMismatch),
     ("Status reports fan min/max out of bounds", testStatusReportsFanMinMaxOutOfBounds),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
