@@ -155,12 +155,36 @@ func testFakeSMCRejectsManualWithoutSafePreManualTarget() throws {
     try expect(result.smcResult == 0x82, "manual mode should be rejected without a safe pre-manual target")
 }
 
+func testFakeSMCRejectsManualUntilAllFansHaveSafeTargets() throws {
+    let smc = FakeSMC.mac165()
+    _ = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "unlock")
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let fan0Maximum = FanEncoding.floatValue(try smc.read(try FanKey("F0Mx")).bytes) ?? 0
+    _ = try smc.write(.target(fan: 0, bytes: FanEncoding.float32LittleEndian(fan0Maximum)), capability: .mac165ValidatedOneShot, reason: "fan 0 safe pre-manual target")
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let blocked = try smc.write(.mode(fan: 0, value: 1), capability: .mac165ValidatedOneShot, reason: "manual before all fans safe")
+    try expect(blocked.smcResult == 0x82, "manual mode should be rejected until every fan has a safe pre-manual target")
+
+    let fan1Maximum = FanEncoding.floatValue(try smc.read(try FanKey("F1Mx")).bytes) ?? 0
+    _ = try smc.write(.target(fan: 1, bytes: FanEncoding.float32LittleEndian(fan1Maximum)), capability: .mac165ValidatedOneShot, reason: "fan 1 safe pre-manual target")
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let accepted = try smc.write(.mode(fan: 0, value: 1), capability: .mac165ValidatedOneShot, reason: "manual after all fans safe")
+    try expect(accepted.smcResult == 0, "manual mode should be accepted after every fan has a safe pre-manual target")
+}
+
 func testFakeSMCRejectsManagedObservedModeWrite() throws {
     let smc = FakeSMC.mac165()
 
     let result = try smc.write(.mode(fan: 0, value: 3), capability: .mac165ValidatedOneShot, reason: "managed observed state is not a command")
 
-    try expect(result.smcResult != 0, "managed observed state write should be rejected")
+    try expect(result.smcResult == 0x82, "managed observed state write should be rejected")
 }
 
 func testFakeSMCReleaseModeSettlesBackToManaged() throws {
@@ -223,7 +247,7 @@ func testFakeSMCRejectsUnsafePreManualTargetRequests() throws {
         let smc = FakeSMC.mac165()
 
         let result = try smc.write(.target(fan: 0, bytes: bytes), capability: .mac165ValidatedOneShot, reason: "unsafe pre-manual \(label)")
-        try expect(result.smcResult != 0, "unsafe pre-manual \(label) target write should be rejected")
+        try expect(result.smcResult == 0x82, "unsafe pre-manual \(label) target write should be rejected")
         smc.advanceTick()
         smc.advanceTick()
 
@@ -280,8 +304,30 @@ func testFakeSMCRejectsManualZeroTargetWrite() throws {
 
     let result = try smc.write(.target(fan: 0, bytes: FanEncoding.float32LittleEndian(0)), capability: .mac165ValidatedOneShot, reason: "zero target")
 
-    try expect(result.smcResult != 0, "zero manual target should be rejected")
+    try expect(result.smcResult == 0x82, "zero manual target should be rejected")
     try expect(try smc.read(try FanKey("F0Tg")).bytes == safeBytes, "zero target should not overwrite previous safe target")
+}
+
+func testFakeSMCAllowsTargetClearOnlyAfterManagedMode() throws {
+    let smc = FakeSMC.mac165()
+    try settleManualMode(smc, fan: 0)
+
+    let blocked = try smc.write(.target(fan: 0, bytes: FanEncoding.float32LittleEndian(0)), capability: .mac165ValidatedOneShot, reason: "zero target while manual")
+    try expect(blocked.smcResult == 0x82, "zero target should be rejected while fan is manual")
+
+    let release = try smc.write(.mode(fan: 0, value: 0), capability: .mac165ValidatedOneShot, reason: "release fan")
+    try expect(release.smcResult == 0, "release mode write should be accepted")
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let mode = try smc.read(try FanKey("F0Md"))
+    try expect(mode.bytes == [3], "fan mode should settle back to managed before clearing target")
+
+    let clear = try smc.write(.target(fan: 0, bytes: FanEncoding.float32LittleEndian(0)), capability: .mac165ValidatedOneShot, reason: "clear target after managed")
+    try expect(clear.smcResult == 0, "zero target should be accepted after fan is managed")
+    try expect(try smc.read(try FanKey("F0Tg")).bytes == FanEncoding.float32LittleEndian(0), "zero target should clear readback after managed mode")
 }
 
 func testFakeSMCRejectsManualAboveMaximumTargetWrite() throws {
@@ -292,7 +338,7 @@ func testFakeSMCRejectsManualAboveMaximumTargetWrite() throws {
 
     let result = try smc.write(.target(fan: 0, bytes: FanEncoding.float32LittleEndian(5_778)), capability: .mac165ValidatedOneShot, reason: "above maximum target")
 
-    try expect(result.smcResult != 0, "above-maximum manual target should be rejected")
+    try expect(result.smcResult == 0x82, "above-maximum manual target should be rejected")
     try expect(try smc.read(try FanKey("F0Tg")).bytes == safeBytes, "above-maximum target should not overwrite previous safe target")
 }
 
@@ -304,7 +350,7 @@ func testFakeSMCRejectsManualNonFiniteTargetWrite() throws {
 
     let result = try smc.write(.target(fan: 0, bytes: FanEncoding.float32LittleEndian(.nan)), capability: .mac165ValidatedOneShot, reason: "non-finite target")
 
-    try expect(result.smcResult != 0, "non-finite manual target should be rejected")
+    try expect(result.smcResult == 0x82, "non-finite manual target should be rejected")
     try expect(try smc.read(try FanKey("F0Tg")).bytes == safeBytes, "non-finite target should not overwrite previous safe target")
 }
 
@@ -350,15 +396,20 @@ func testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets() throws {
 }
 
 func settleManualMode(_ smc: FakeSMC, fan: Int) throws {
-    _ = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "unlock")
+    let capability = FanCapability.mac165ValidatedOneShot
+    _ = try smc.write(.unlock(value: capability.unlockOn), capability: capability, reason: "unlock")
     smc.advanceTick()
     smc.advanceTick()
     smc.advanceTick()
-    let maximum = FanEncoding.floatValue(try smc.read(try FanKey("F\(fan)Mx")).bytes) ?? 0
-    _ = try smc.write(.target(fan: fan, bytes: FanEncoding.float32LittleEndian(maximum)), capability: .mac165ValidatedOneShot, reason: "safe pre-manual target")
-    smc.advanceTick()
-    smc.advanceTick()
-    let manual = try smc.write(.mode(fan: fan, value: 1), capability: .mac165ValidatedOneShot, reason: "manual")
+
+    for index in 0..<capability.fanCount {
+        let maximum = FanEncoding.floatValue(try smc.read(try FanKey("F\(index)Mx")).bytes) ?? 0
+        _ = try smc.write(.target(fan: index, bytes: FanEncoding.float32LittleEndian(maximum)), capability: capability, reason: "safe pre-manual target")
+        smc.advanceTick()
+        smc.advanceTick()
+    }
+
+    let manual = try smc.write(.mode(fan: fan, value: capability.manualCommand), capability: capability, reason: "manual")
     try expect(manual.smcResult == 0, "manual mode should be accepted after safe pre-manual target")
     smc.advanceTick()
     smc.advanceTick()
@@ -379,6 +430,7 @@ let tests: [(String, () throws -> Void)] = [
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
     ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),
+    ("FakeSMC rejects manual until all fans have safe targets", testFakeSMCRejectsManualUntilAllFansHaveSafeTargets),
     ("FakeSMC rejects managed observed mode write", testFakeSMCRejectsManagedObservedModeWrite),
     ("FakeSMC release mode settles back to managed", testFakeSMCReleaseModeSettlesBackToManaged),
     ("FakeSMC pre-manual target write does not stick immediately", testFakeSMCPreManualTargetWriteDoesNotStickImmediately),
@@ -387,6 +439,7 @@ let tests: [(String, () throws -> Void)] = [
     ("FakeSMC settles valid pre-manual target to safe guard", testFakeSMCSettlesValidPreManualTargetToSafeGuard),
     ("FakeSMC delays Ftst off readback", testFakeSMCDelaysFtstOffReadback),
     ("FakeSMC rejects manual zero target write", testFakeSMCRejectsManualZeroTargetWrite),
+    ("FakeSMC allows target clear only after managed mode", testFakeSMCAllowsTargetClearOnlyAfterManagedMode),
     ("FakeSMC rejects manual above maximum target write", testFakeSMCRejectsManualAboveMaximumTargetWrite),
     ("FakeSMC rejects manual non-finite target write", testFakeSMCRejectsManualNonFiniteTargetWrite),
     ("FakeSMC post-manual target write sticks", testFakeSMCPostManualTargetWriteSticks),

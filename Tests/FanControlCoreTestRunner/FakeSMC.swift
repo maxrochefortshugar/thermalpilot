@@ -21,8 +21,9 @@ final class FakeSMC: FanHardware {
     private(set) var writes: [WriteEvent] = []
     private var entries: [String: Entry]
     private var tick = 0
-    private var pending: [(applyAt: Int, key: String, bytes: [UInt8])] = []
+    private var pending: [(applyAt: Int, key: String, bytes: [UInt8], releaseSettledFan: Int?)] = []
     private var scriptedRejections: [(operation: FanWriteOperation, key: String, smcResult: UInt8)] = []
+    private var releaseSettledFans: Set<Int> = []
 
     init(entries: [String: Entry]) {
         self.entries = entries
@@ -52,6 +53,9 @@ final class FakeSMC: FanHardware {
         pending.removeAll { $0.applyAt <= tick }
         for item in ready {
             entries[item.key]?.bytes = item.bytes
+            if let fan = item.releaseSettledFan {
+                releaseSettledFans.insert(fan)
+            }
         }
         simulateRamp()
     }
@@ -104,10 +108,10 @@ final class FakeSMC: FanHardware {
             return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.smcResult)
         }
 
-        if case .mode(let fan, let value) = operation {
+        if case .mode(_, let value) = operation {
             if value == capability.manualCommand {
                 guard entries["Ftst"]?.bytes == [capability.unlockOn],
-                      safePreManualTargetReadback(fan: fan, capability: capability)
+                      allFansHaveSafePreManualTargetReadback(capability: capability)
                 else {
                     return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
                 }
@@ -117,31 +121,45 @@ final class FakeSMC: FanHardware {
         }
 
         if key.stringValue == "Ftst" {
-            pending.append((applyAt: tick + 3, key: key.stringValue, bytes: bytes))
+            pending.append((applyAt: tick + 3, key: key.stringValue, bytes: bytes, releaseSettledFan: nil))
             return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
         }
 
         if key.stringValue.hasSuffix("Md") {
             if case .mode(_, 0) = operation {
-                pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0]))
-                pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [3]))
+                if case .mode(let fan, _) = operation {
+                    releaseSettledFans.remove(fan)
+                    pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0], releaseSettledFan: nil))
+                    pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [3], releaseSettledFan: fan))
+                } else {
+                    pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0], releaseSettledFan: nil))
+                    pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [3], releaseSettledFan: nil))
+                }
             } else {
-                pending.append((applyAt: tick + 2, key: key.stringValue, bytes: bytes))
+                if case .mode(let fan, _) = operation {
+                    releaseSettledFans.remove(fan)
+                }
+                pending.append((applyAt: tick + 2, key: key.stringValue, bytes: bytes, releaseSettledFan: nil))
             }
             return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
         }
 
         if case .target(let fan, _) = operation {
-            guard entries["F\(fan)Md"]?.bytes == [capability.manualCommand] else {
-                if validPreManualTargetRequest(bytes, fan: fan, capability: capability) {
-                    pending.append((applyAt: tick + 2, key: key.stringValue, bytes: preManualTargetGuardBytes(fan: fan, capability: capability)))
+            if entries["F\(fan)Md"]?.bytes != [capability.manualCommand] {
+                if validManagedTargetClear(bytes, fan: fan, capability: capability) {
+                    releaseSettledFans.remove(fan)
+                } else if validPreManualTargetRequest(bytes, fan: fan, capability: capability) {
+                    pending.append((applyAt: tick + 2, key: key.stringValue, bytes: preManualTargetGuardBytes(fan: fan, capability: capability), releaseSettledFan: nil))
                     return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
+                } else {
+                    return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
                 }
-                return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
             }
 
-            guard validManualTarget(bytes, fan: fan) else {
-                return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+            if entries["F\(fan)Md"]?.bytes == [capability.manualCommand] {
+                guard validManualTarget(bytes, fan: fan) else {
+                    return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+                }
             }
         }
 
@@ -162,6 +180,14 @@ final class FakeSMC: FanHardware {
         return target >= minimum && target <= maximum
     }
 
+    private func validManagedTargetClear(_ bytes: [UInt8], fan: Int, capability: FanCapability) -> Bool {
+        guard releaseSettledFans.contains(fan),
+              entries["F\(fan)Md"]?.bytes == [capability.managedObservedState],
+              let target = FanEncoding.floatValue(bytes)
+        else { return false }
+        return target == 0
+    }
+
     private func validPreManualTargetRequest(_ bytes: [UInt8], fan: Int, capability: FanCapability) -> Bool {
         guard let target = FanEncoding.floatValue(bytes),
               let minimum = FanEncoding.floatValue(entries["F\(fan)Mn"]?.bytes ?? []),
@@ -178,6 +204,13 @@ final class FakeSMC: FanHardware {
         else { return false }
         let safeFloor = max(minimum * capability.preManualMinimumMultiplier, 1)
         return target >= safeFloor && target < maximum
+    }
+
+    private func allFansHaveSafePreManualTargetReadback(capability: FanCapability) -> Bool {
+        for fan in 0..<capability.fanCount {
+            guard safePreManualTargetReadback(fan: fan, capability: capability) else { return false }
+        }
+        return true
     }
 
     private func preManualTargetGuardBytes(fan: Int, capability: FanCapability) -> [UInt8] {
