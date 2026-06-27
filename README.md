@@ -20,8 +20,11 @@ Apple's automatic fan control.
 - no sudo requirement for the default probe
 
 `mlx-chill-control` is present for active-control development and command
-parsing, but execution remains disabled until crash and sleep/wake recovery are
-validated. The default `mlx-chill` executable remains read-only.
+parsing, but boost execution remains disabled until crash recovery,
+parent-death recovery, missed-heartbeat recovery, lease-expiry recovery, signal
+recovery, and sleep/wake recovery are validated on hardware. `auto` remains
+recovery-only for compatible existing MLX & Chill leases. The default
+`mlx-chill` executable remains read-only.
 
 ## Build
 
@@ -71,17 +74,18 @@ swift run FanProbeCoreTestRunner
 
 ## Safety model
 
-This repository intentionally exposes no SMC write API today. The C bridge only
-supports:
+The default `mlx-chill` executable intentionally exposes no SMC write API. The
+C bridge only supports:
 
 - open SMC user client
 - close SMC user client
 - read SMC key
 - read SMC key by index
 
-Future fan-control work should live behind explicit safety rails: clamp targets
-to discovered hardware ranges, restore automatic mode on exit and wake, and
-make read-only mode the default.
+Active fan-control development lives behind the separate `mlx-chill-control`
+executable. Boost and workload execution remain disabled until crash recovery,
+parent-death recovery, missed-heartbeat recovery, lease-expiry recovery, signal
+recovery, and sleep/wake recovery are validated on hardware.
 
 ## Roadmap
 

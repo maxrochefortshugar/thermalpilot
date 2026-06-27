@@ -101,6 +101,15 @@ func repositoryFileURL(_ path: String) throws -> URL {
     throw TestFailure(description: "missing repository file \(path)")
 }
 
+func testControlExecutablePrintsMac165DisabledGate() throws {
+    let source = try repositorySourceText("Sources/mlx-chill-control/main.swift")
+
+    try expect(
+        source.contains("active fan control is disabled for Mac16,5"),
+        "mlx-chill-control should print the Mac16,5 active-control disabled gate"
+    )
+}
+
 func testCLIParsesBoundedBoostDuration() throws {
     let command = try FanControlCommand.parse(["boost", "max", "--for", "10m", "--i-understand-active-fan-control"])
     let maxCommand = try FanControlCommand.parse(["boost", "max", "--for", "120m", "--i-understand-active-fan-control"])
@@ -1924,6 +1933,7 @@ let tests: [(String, () throws -> Void)] = [
     ("SMCControlTransport keeps raw write private", testSMCControlTransportKeepsRawWritePrivate),
     ("SMCControlTransport writes only typed operations from capability", testSMCControlTransportWritesOnlyTypedOperationsFromCapability),
     ("SMCControlTransport SMCKeyData ABI layout", testSMCControlTransportKeyDataABILayout),
+    ("Control executable prints Mac16,5 disabled gate", testControlExecutablePrintsMac165DisabledGate),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
     ("CLI parses auto", testCLIParsesAuto),
