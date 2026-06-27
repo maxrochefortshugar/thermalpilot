@@ -120,6 +120,28 @@ func testResolverPropagatesUnreadableFtst() throws {
     })
 }
 
+func testFakeSMCDelayedFtstReadback() throws {
+    let smc = FakeSMC.mac165()
+    let first = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "test unlock")
+    try expect(first.smcResult == 0, "Ftst write should be accepted")
+
+    let immediate = try smc.read(try FanKey("Ftst"))
+    try expect(immediate.bytes == [0], "first readback should still be delayed")
+
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let settled = try smc.read(try FanKey("Ftst"))
+    try expect(settled.bytes == [1], "readback should eventually become 1")
+}
+
+func testFakeSMCRejectsManualBeforeUnlockSettles() throws {
+    let smc = FakeSMC.mac165()
+    let result = try smc.write(.mode(fan: 0, value: 1), capability: .mac165ValidatedOneShot, reason: "manual too early")
+    try expect(result.smcResult == 0x82, "manual mode should be rejected before unlock")
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("Core boundary", testCoreBoundary),
     ("Mac16,5 capability", testMac165Capability),
@@ -131,7 +153,9 @@ let tests: [(String, () throws -> Void)] = [
     ("Resolver rejects lowercase mode path when present", testResolverRejectsLowercaseModePathWhenPresent),
     ("Resolver propagates missing uppercase mode key", testResolverPropagatesMissingUppercaseModeKey),
     ("Resolver propagates missing Ftst", testResolverPropagatesMissingFtst),
-    ("Resolver propagates unreadable Ftst", testResolverPropagatesUnreadableFtst)
+    ("Resolver propagates unreadable Ftst", testResolverPropagatesUnreadableFtst),
+    ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
+    ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles)
 ]
 
 var failures = 0
