@@ -316,22 +316,71 @@ func testStatusReportsFanMinMaxOutOfBounds() throws {
 
 func testAuditEventRecordsWriteDetails() throws {
     let logger = InMemoryFanControlLogger()
+    let oldBytes = [UInt8](arrayLiteral: 0)
+    let newBytes = [UInt8](arrayLiteral: 1)
     let event = FanWriteAuditEvent(
-        timestampUnix: 1_800_000_123,
+        timestampUnix: 1,
         serviceName: "FakeSMC",
-        key: try FanKey("F0Tg"),
-        reason: "test target write",
-        requestedBytes: FanEncoding.float32LittleEndian(2_000),
-        oldBytes: FanEncoding.float32LittleEndian(0),
-        resultBytes: FanEncoding.float32LittleEndian(2_000),
+        capabilityFingerprint: "Mac16,5|j616c|2|F%dMd|true",
+        leaseID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+        key: "Ftst",
+        oldRaw: oldBytes,
+        newRaw: newBytes,
         kernReturn: 0,
         smcResult: 0,
-        smcStatus: 0
+        smcStatus: 0,
+        reason: "test"
     )
 
     try logger.record(event)
 
-    try expect(logger.events == [event], "in-memory audit logger should record write details")
+    try expect(logger.events.count == 1, "logger should retain event")
+    try expect(logger.events[0].capabilityFingerprint == "Mac16,5|j616c|2|F%dMd|true", "capability fingerprint should be captured")
+    try expect(logger.events[0].leaseID == UUID(uuidString: "33333333-3333-3333-3333-333333333333")!, "lease ID should be captured")
+    try expect(logger.events[0].oldRaw == oldBytes, "old bytes should be captured")
+    try expect(logger.events[0].newRaw == newBytes, "new bytes should be captured")
+}
+
+func testJSONLAuditLoggerEncodesTask5FieldNames() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("fan-audit-\(UUID().uuidString)")
+        .appendingPathExtension("jsonl")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let logger = JSONLFanControlLogger(url: url)
+    try logger.record(FanWriteAuditEvent(
+        timestampUnix: 1,
+        serviceName: "FakeSMC",
+        capabilityFingerprint: "Mac16,5|j616c|2|F%dMd|true",
+        leaseID: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+        key: "Ftst",
+        oldRaw: [0],
+        newRaw: [1],
+        kernReturn: 0,
+        smcResult: 0,
+        smcStatus: 0,
+        reason: "test"
+    ))
+
+    let data = try Data(contentsOf: url)
+    let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+    try expect(lines.count == 1, "JSONL logger should write one event line")
+
+    let object = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
+    let keys = Set(object?.keys ?? [String: Any]().keys)
+    try expect(keys == [
+        "timestampUnix",
+        "serviceName",
+        "capabilityFingerprint",
+        "leaseID",
+        "key",
+        "oldRaw",
+        "newRaw",
+        "kernReturn",
+        "smcResult",
+        "smcStatus",
+        "reason"
+    ], "JSONL audit event should encode exact Task 5 field names")
 }
 
 func testFakeSMCDelayedFtstReadback() throws {
@@ -714,6 +763,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Status rejects RPlt size mismatch", testStatusRejectsPlatformSizeMismatch),
     ("Status reports fan min/max out of bounds", testStatusReportsFanMinMaxOutOfBounds),
     ("Audit event records write details", testAuditEventRecordsWriteDetails),
+    ("JSONL audit logger encodes Task 5 field names", testJSONLAuditLoggerEncodesTask5FieldNames),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
     ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),
