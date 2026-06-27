@@ -1505,6 +1505,28 @@ func testBoostClearsLeaseWhenFirstWriteRejected() throws {
     try expect(try store.readIfPresent() == nil, "first-write rejection should clear lease because no hardware write was accepted")
 }
 
+func testBoostRetriesTransientManualModeRejection() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-retry-transient-manual"))
+    let clock = TestClock(onSleep: { smc.advanceTick() })
+    smc.rejectNextWrite(
+        operation: .mode(fan: 0, value: activeTestCapability().manualCommand),
+        key: "F0Md",
+        smcResult: 0x82
+    )
+    let controller = boostController(smc: smc, store: store, clock: clock)
+
+    _ = try controller.boostMax(leaseSeconds: 60, reason: "transient manual rejection")
+
+    let fan0ManualWrites = smc.writes.filter {
+        $0.operation == .mode(fan: 0, value: activeTestCapability().manualCommand)
+    }
+    try expect(fan0ManualWrites.count == 2, "transient manual rejection should be retried once before succeeding")
+    try expect(fan0ManualWrites[0].smcResult == 0x82, "first manual write should capture transient SMC rejection")
+    try expect(fan0ManualWrites[1].smcResult == 0, "second manual write should succeed")
+    try expect(try smc.read(try FanKey("F0Md")).bytes == [activeTestCapability().manualCommand], "fan 0 should end in manual mode")
+}
+
 func testBoostRefusesPreexistingUnlockBeforeLeaseClaim() throws {
     let smc = FakeSMC.mac165()
     smc.setRawEntryBytes("Ftst", [1])
@@ -2316,6 +2338,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Boost creates lease before first write", testBoostCreatesLeaseBeforeFirstWrite),
     ("Boost restores on write failure after lease creation", testBoostRestoresOnWriteFailureAfterLeaseCreation),
     ("Boost clears lease when first write rejected", testBoostClearsLeaseWhenFirstWriteRejected),
+    ("Boost retries transient manual mode rejection", testBoostRetriesTransientManualModeRejection),
     ("Boost refuses preexisting unlock before lease claim", testBoostRefusesPreexistingUnlockBeforeLeaseClaim),
     ("Boost audits and rejects nonzero kernReturn before rollback", testBoostAuditsAndRejectsNonzeroKernReturnBeforeRollback),
     ("Boost uses hardware validated sequence", testBoostUsesHardwareValidatedSequence),

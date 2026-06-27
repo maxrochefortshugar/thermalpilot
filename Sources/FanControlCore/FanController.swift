@@ -358,7 +358,28 @@ package final class FanController {
         write: (FanWriteOperation, String) throws -> Void
     ) throws {
         for fan in status.fans {
-            try write(.mode(fan: fan.index, value: capability.manualCommand), reason)
+            try writeManualModeWithRetry(fan: fan.index, reason: reason, write: write)
+        }
+    }
+
+    private func writeManualModeWithRetry(
+        fan: Int,
+        reason: String,
+        write: (FanWriteOperation, String) throws -> Void
+    ) throws {
+        let operation = FanWriteOperation.mode(fan: fan, value: capability.manualCommand)
+        let key = try capability.modeKey(for: fan).stringValue
+        var elapsed = 0.0
+
+        while true {
+            do {
+                try write(operation, reason)
+                return
+            } catch FanControlError.writeRejected(let rejectedKey, let smcResult)
+                where rejectedKey == key && smcResult == 0x82 && elapsed < 10 {
+                clock.sleep(seconds: 1)
+                elapsed += 1
+            }
         }
     }
 

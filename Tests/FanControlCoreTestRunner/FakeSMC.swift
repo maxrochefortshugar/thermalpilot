@@ -26,6 +26,7 @@ final class FakeSMC: FanHardware {
     private var tick = 0
     private var pending: [(applyAt: Int, key: String, bytes: [UInt8], releaseSettledFan: Int?)] = []
     private var scriptedRejections: [(operation: FanWriteOperation, key: String, result: FanWriteResult)] = []
+    private var scriptedOneShotRejections: [(operation: FanWriteOperation, key: String, result: FanWriteResult)] = []
     private var releaseSettledFans: Set<Int> = []
 
     init(entries: [String: Entry]) {
@@ -82,6 +83,14 @@ final class FakeSMC: FanHardware {
         ))
     }
 
+    func rejectNextWrite(operation: FanWriteOperation, key: String, smcResult: UInt8) {
+        scriptedOneShotRejections.append((
+            operation: operation,
+            key: key,
+            result: FanWriteResult(kernReturn: 0, smcResult: smcResult, smcStatus: 0)
+        ))
+    }
+
     func setRawEntryBytes(_ key: String, _ bytes: [UInt8]) {
         if var entry = entries[key] {
             entry.bytes = bytes
@@ -129,6 +138,10 @@ final class FakeSMC: FanHardware {
         onBeforeWrite?(operation, key.stringValue)
 
         if let rejection = scriptedRejections.first(where: { $0.operation == operation && $0.key == key.stringValue }) {
+            return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.result)
+        }
+        if let rejectionIndex = scriptedOneShotRejections.firstIndex(where: { $0.operation == operation && $0.key == key.stringValue }) {
+            let rejection = scriptedOneShotRejections.remove(at: rejectionIndex)
             return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.result)
         }
 
