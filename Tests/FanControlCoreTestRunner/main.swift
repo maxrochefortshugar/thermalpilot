@@ -1171,6 +1171,172 @@ func testBoostRefusesWhenActiveControlDisabled() throws {
     try expect(try store.readIfPresent() == nil, "disabled boost should not claim a lease")
 }
 
+func testRestoreUsesCapturedLeaseTargetsNotCurrentTargets() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-captured-targets"))
+    let logger = InMemoryFanControlLogger()
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capturedTargetRaw: FanEncoding.float32LittleEndian(0))
+    let controller = restoreController(smc: smc, store: store, logger: logger)
+
+    let result = try controller.restoreAuto(reason: "test restore")
+
+    try expect(result.restored, "restore should report restored")
+    try expect(result.finalModes == [activeTestCapability().managedObservedState, activeTestCapability().managedObservedState], "restore should return final managed modes")
+    try expect(result.finalTargets == [0, 0], "restore should return final captured target RPMs")
+
+    let operations = smc.writes.map(\.operation)
+    guard let release0 = operations.firstIndex(of: .mode(fan: 0, value: activeTestCapability().releaseCommand)),
+          let release1 = operations.firstIndex(of: .mode(fan: 1, value: activeTestCapability().releaseCommand)),
+          let clear0 = operations.firstIndex(of: .target(fan: 0, bytes: FanEncoding.float32LittleEndian(0))),
+          let clear1 = operations.firstIndex(of: .target(fan: 1, bytes: FanEncoding.float32LittleEndian(0)))
+    else {
+        throw TestFailure(description: "restore should write release modes and captured zero targets")
+    }
+    try expect(release0 < clear0, "fan 0 captured target clear should happen after release mode write")
+    try expect(release1 < clear1, "fan 1 captured target clear should happen after release mode write")
+    try expect(smc.writes.filter { $0.operation == .target(fan: 0, bytes: FanEncoding.float32LittleEndian(5_777)) }.count == 1, "fan 0 should only receive the protective high target, not current max as restore target")
+    try expect(smc.writes.filter { $0.operation == .target(fan: 1, bytes: FanEncoding.float32LittleEndian(5_777)) }.count == 1, "fan 1 should only receive the protective high target, not current max as restore target")
+    try expect(logger.events.map(\.key) == smc.writes.map(\.key), "restore should audit every hardware write")
+    try expect(logger.events.allSatisfy { $0.leaseID == lease.id }, "restore audit events should include lease ID")
+}
+
+func testRestoreNeverClearsTargetWhileManual() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-never-clears-manual"))
+    _ = try installBoostedLeaseState(smc: smc, store: store, capturedTargetRaw: FanEncoding.float32LittleEndian(0))
+    var clearedWhileManual: [Int] = []
+    smc.onBeforeWrite = { operation, _ in
+        guard case .target(let fan, let bytes) = operation,
+              bytes == FanEncoding.float32LittleEndian(0),
+              let mode = smc.rawEntryBytes("F\(fan)Md")?.first,
+              mode == activeTestCapability().manualCommand
+        else { return }
+        clearedWhileManual.append(fan)
+    }
+    let controller = restoreController(smc: smc, store: store)
+
+    _ = try controller.restoreAuto(reason: "test restore")
+
+    try expect(clearedWhileManual.isEmpty, "restore should not clear captured targets while a fan still reads manual")
+}
+
+func testRestoreClearsLeaseOnlyAfterManagedSettle() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-clear-after-managed-settle"))
+    _ = try installBoostedLeaseState(smc: smc, store: store, capturedTargetRaw: FanEncoding.float32LittleEndian(0), actualRPM: 5_777)
+    var sawManagedSettledWithLease = false
+    let clock = TestClock(onSleep: {
+        smc.advanceTick()
+        if (try? store.readIfPresent()) != nil,
+           restoreHardwareSettled(smc) {
+            sawManagedSettledWithLease = true
+        }
+    })
+    let controller = restoreController(smc: smc, store: store, clock: clock)
+
+    _ = try controller.restoreAuto(reason: "test restore")
+
+    try expect(sawManagedSettledWithLease, "restore should keep lease while managed mode, unlock, target, and idle RPM settle")
+    try expect(try store.readIfPresent() == nil, "restore should clear lease after managed settle")
+    try expect(restoreHardwareSettled(smc), "restore should leave hardware in managed settled state")
+}
+
+func testAutoNoopsWhenNoLeaseExists() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-no-lease-noop"))
+    let controller = restoreController(smc: smc, store: store)
+
+    let result = try controller.restoreAuto(reason: "no lease")
+
+    try expect(result == FanRestoreResult(restored: true, finalModes: [], finalTargets: []), "missing lease should return restored empty result")
+    try expect(smc.writes.isEmpty, "missing lease restore should not write hardware")
+}
+
+func testRestoreRecoveryModeRequiresLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-recovery-no-lease"))
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("recovery restore should require a lease", {
+        _ = try controller.restoreAuto(reason: "recovery", recoveryMode: true)
+    }, matching: { error in
+        error as? FanControlError == .leaseRequired("recovery requested without lease")
+    })
+
+    try expect(smc.writes.isEmpty, "recovery restore without lease should not write hardware")
+}
+
+func testRestoreFingerprintMismatchDoesNotWriteOrClearLease() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-fingerprint-mismatch"))
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capabilityFingerprint: "old-fingerprint")
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject mismatched lease capability", {
+        _ = try controller.restoreAuto(reason: "mismatch")
+    }, matching: { error in
+        guard case .unsafeState(let message) = error as? FanControlError else { return false }
+        return message.contains("capability fingerprint")
+    })
+
+    try expect(smc.writes.isEmpty, "capability mismatch restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "capability mismatch restore should not clear lease")
+}
+
+func testRestoreCorruptLeaseFailsClosedWithoutClearing() throws {
+    let smc = FakeSMC.mac165()
+    let directory = temporaryDirectory("restore-corrupt-lease")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("{\"id\":\"truncated\"".utf8).write(to: directory.appendingPathComponent("current-lease.json"))
+    let store = FanLeaseStore(directory: directory)
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should fail closed on corrupt lease", {
+        _ = try controller.restoreAuto(reason: "corrupt")
+    }, matching: { error in
+        guard case .restoreFailed(let message) = error as? FanControlError else { return false }
+        return message.contains("lease")
+    })
+
+    try expect(smc.writes.isEmpty, "corrupt lease restore should not write hardware")
+    try expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("current-lease.json").path), "corrupt lease restore should not clear lease")
+}
+
+func testRestoreConvergesFromPartialRollbackState() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-partial-rollback"))
+    _ = try installPartialRollbackLeaseState(smc: smc, store: store, capturedTargetRaw: FanEncoding.float32LittleEndian(0))
+    let controller = restoreController(smc: smc, store: store)
+
+    let result = try controller.restoreAuto(reason: "partial rollback")
+
+    try expect(result.restored, "partial rollback restore should report restored")
+    try expect(result.finalModes == [activeTestCapability().managedObservedState, activeTestCapability().managedObservedState], "partial rollback restore should converge both fans to managed")
+    try expect(result.finalTargets == [0, 0], "partial rollback restore should converge both fans to captured target")
+    try expect(try store.readIfPresent() == nil, "partial rollback restore should clear lease after convergence")
+}
+
+func testRestoreAuditsRejectedWritesBeforeThrowing() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-rejected-write-audit"))
+    let logger = InMemoryFanControlLogger()
+    let lease = try installBoostedLeaseState(smc: smc, store: store)
+    smc.rejectWrite(operation: .mode(fan: 1, value: activeTestCapability().releaseCommand), key: "F1Md", smcResult: 0x84)
+    let controller = restoreController(smc: smc, store: store, logger: logger)
+
+    try expectThrows("restore should throw rejected release write", {
+        _ = try controller.restoreAuto(reason: "rejected release")
+    }, matching: { error in
+        error as? FanControlError == .writeRejected(key: "F1Md", smcResult: 0x84)
+    })
+
+    guard let rejected = logger.events.first(where: { $0.key == "F1Md" && $0.smcResult == 0x84 }) else {
+        throw TestFailure(description: "rejected restore write should be audited before throw")
+    }
+    try expect(rejected.leaseID == lease.id, "rejected restore write audit should include lease ID")
+    try expect(try store.readIfPresent() == lease, "rejected restore should leave lease for later recovery")
+}
+
 func settleManualMode(_ smc: FakeSMC, fan: Int) throws {
     let capability = FanCapability.mac165ValidatedOneShot
     _ = try smc.write(.unlock(value: capability.unlockOn), capability: capability, reason: "unlock")
@@ -1275,6 +1441,94 @@ func boostController(
             ownerPID: FanOwnerProcessInfo(pid: ownerPID, parentPID: 100, startTimeUnix: 1_700_000_000)
         ])
     )
+}
+
+func restoreController(
+    smc: FakeSMC,
+    store: FanLeaseStore,
+    capability: FanCapability = activeTestCapability(),
+    clock: FanControlClock? = nil,
+    logger: InMemoryFanControlLogger = InMemoryFanControlLogger()
+) -> FanController {
+    FanController(
+        hardware: smc,
+        capability: capability,
+        clock: clock ?? TestClock(onSleep: { smc.advanceTick() }),
+        logger: logger,
+        leaseStore: store,
+        processInspector: TestProcessInspector(ownerProcesses: [:])
+    )
+}
+
+@discardableResult
+func installBoostedLeaseState(
+    smc: FakeSMC,
+    store: FanLeaseStore,
+    capabilityFingerprint: String = activeTestCapability().fingerprint,
+    capturedTargetRaw: [UInt8] = FanEncoding.float32LittleEndian(0),
+    actualRPM: Float = 5_777
+) throws -> FanLease {
+    let maxBytes = FanEncoding.float32LittleEndian(5_777)
+    smc.setRawEntryBytes("Ftst", [activeTestCapability().unlockOn])
+    for fan in 0..<activeTestCapability().fanCount {
+        smc.setRawEntryBytes("F\(fan)Md", [activeTestCapability().manualCommand])
+        smc.setRawEntryBytes("F\(fan)Tg", maxBytes)
+        smc.setRawEntryBytes("F\(fan)Ac", FanEncoding.float32LittleEndian(actualRPM))
+    }
+    let lease = testLease(
+        capabilityFingerprint: capabilityFingerprint,
+        phase: .boosted,
+        capturedFans: (0..<activeTestCapability().fanCount).map {
+            CapturedFanState(index: $0, modeRaw: [activeTestCapability().managedObservedState], targetRaw: capturedTargetRaw)
+        }
+    )
+    try store.claim(lease)
+    smc.clearWrites()
+    return lease
+}
+
+@discardableResult
+func installPartialRollbackLeaseState(
+    smc: FakeSMC,
+    store: FanLeaseStore,
+    capturedTargetRaw: [UInt8]
+) throws -> FanLease {
+    let maxBytes = FanEncoding.float32LittleEndian(5_777)
+    smc.setRawEntryBytes("Ftst", [activeTestCapability().unlockOff])
+    smc.setRawEntryBytes("F0Md", [activeTestCapability().manualCommand])
+    smc.setRawEntryBytes("F0Tg", maxBytes)
+    smc.setRawEntryBytes("F0Ac", maxBytes)
+    _ = try smc.write(.mode(fan: 0, value: activeTestCapability().releaseCommand), capability: activeTestCapability(), reason: "pre-settled partial release")
+    for _ in 0..<4 { smc.advanceTick() }
+    smc.setRawEntryBytes("F1Md", [activeTestCapability().manualCommand])
+    smc.setRawEntryBytes("F1Tg", maxBytes)
+    smc.setRawEntryBytes("F1Ac", maxBytes)
+    let lease = testLease(
+        phase: .boosted,
+        capturedFans: (0..<activeTestCapability().fanCount).map {
+            CapturedFanState(index: $0, modeRaw: [activeTestCapability().managedObservedState], targetRaw: capturedTargetRaw)
+        }
+    )
+    try store.claim(lease)
+    smc.clearWrites()
+    return lease
+}
+
+func restoreHardwareSettled(_ smc: FakeSMC) -> Bool {
+    guard smc.rawEntryBytes("Ftst") == [activeTestCapability().unlockOff] else { return false }
+    for fan in 0..<activeTestCapability().fanCount {
+        guard smc.rawEntryBytes("F\(fan)Md") == [activeTestCapability().managedObservedState],
+              smc.rawEntryBytes("F\(fan)Tg") == FanEncoding.float32LittleEndian(0),
+              let actualBytes = smc.rawEntryBytes("F\(fan)Ac"),
+              let minimumBytes = smc.rawEntryBytes("F\(fan)Mn"),
+              let actual = FanEncoding.floatValue(actualBytes),
+              let minimum = FanEncoding.floatValue(minimumBytes),
+              actual <= minimum
+        else {
+            return false
+        }
+    }
+    return true
 }
 
 func validationState(
@@ -1406,7 +1660,16 @@ let tests: [(String, () throws -> Void)] = [
     ("Boost refuses preexisting unlock before lease claim", testBoostRefusesPreexistingUnlockBeforeLeaseClaim),
     ("Boost audits and rejects nonzero kernReturn before rollback", testBoostAuditsAndRejectsNonzeroKernReturnBeforeRollback),
     ("Boost uses hardware validated sequence", testBoostUsesHardwareValidatedSequence),
-    ("Boost refuses when active control disabled", testBoostRefusesWhenActiveControlDisabled)
+    ("Boost refuses when active control disabled", testBoostRefusesWhenActiveControlDisabled),
+    ("Restore uses captured lease targets not current targets", testRestoreUsesCapturedLeaseTargetsNotCurrentTargets),
+    ("Restore never clears target while manual", testRestoreNeverClearsTargetWhileManual),
+    ("Restore clears lease only after managed settle", testRestoreClearsLeaseOnlyAfterManagedSettle),
+    ("Restore noops when no lease exists", testAutoNoopsWhenNoLeaseExists),
+    ("Restore recovery mode requires lease", testRestoreRecoveryModeRequiresLease),
+    ("Restore fingerprint mismatch does not write or clear lease", testRestoreFingerprintMismatchDoesNotWriteOrClearLease),
+    ("Restore corrupt lease fails closed without clearing", testRestoreCorruptLeaseFailsClosedWithoutClearing),
+    ("Restore converges from partial rollback state", testRestoreConvergesFromPartialRollbackState),
+    ("Restore audits rejected writes before throwing", testRestoreAuditsRejectedWritesBeforeThrowing)
 ]
 
 var failures = 0

@@ -104,6 +104,10 @@ final class FakeSMC: FanHardware {
         entries[key]?.bytes
     }
 
+    func clearWrites() {
+        writes.removeAll()
+    }
+
     func write(_ operation: FanWriteOperation, capability: FanCapability, reason: String) throws -> FanWriteResult {
         let key: FanKey
         let bytes: [UInt8]
@@ -255,13 +259,18 @@ final class FakeSMC: FanHardware {
 
     private func simulateRamp() {
         for index in 0..<2 {
-            guard entries["F\(index)Md"]?.bytes == [1],
+            guard let mode = entries["F\(index)Md"]?.bytes.first,
                   let target = FanEncoding.floatValue(entries["F\(index)Tg"]?.bytes ?? []),
-                  target > 0
+                  let minimum = FanEncoding.floatValue(entries["F\(index)Mn"]?.bytes ?? [])
             else { continue }
             let actualKey = "F\(index)Ac"
             let current = FanEncoding.floatValue(entries[actualKey]?.bytes ?? []) ?? 0
-            entries[actualKey]?.bytes = FanEncoding.float32LittleEndian(min(target, current + 2_000))
+
+            if mode == 1, target > 0 {
+                entries[actualKey]?.bytes = FanEncoding.float32LittleEndian(min(target, current + 2_000))
+            } else if mode == 3, target == 0, current > minimum {
+                entries[actualKey]?.bytes = FanEncoding.float32LittleEndian(max(minimum, current - 2_000))
+            }
         }
     }
 }

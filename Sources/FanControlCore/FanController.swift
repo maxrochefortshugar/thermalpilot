@@ -143,6 +143,64 @@ package final class FanController {
         }
     }
 
+    @discardableResult
+    package func restoreAuto(reason: String, recoveryMode: Bool = false) throws -> FanRestoreResult {
+        let lease: FanLease
+        do {
+            guard let currentLease = try leaseStore.readIfPresent() else {
+                if recoveryMode {
+                    throw FanControlError.leaseRequired("recovery requested without lease")
+                }
+                return FanRestoreResult(restored: true, finalModes: [], finalTargets: [])
+            }
+            lease = currentLease
+        } catch FanLeaseStoreError.corruptLease {
+            throw FanControlError.restoreFailed("lease corrupt; restore requires operator intervention")
+        } catch FanLeaseStoreError.unreadableLease {
+            throw FanControlError.restoreFailed("lease unreadable; restore requires operator intervention")
+        }
+
+        guard lease.capabilityFingerprint == capability.fingerprint else {
+            throw FanControlError.unsafeState("lease capability fingerprint mismatch")
+        }
+
+        let snapshot = try status()
+        let capturedTargets = try capturedTargetsByFanIndex(lease)
+        for fan in snapshot.fans {
+            guard capturedTargets[fan.index] != nil else {
+                throw FanControlError.restoreFailed("lease missing captured target for fan \(fan.index)")
+            }
+        }
+
+        for fan in snapshot.fans {
+            try write(.target(fan: fan.index, bytes: FanEncoding.float32LittleEndian(fan.maximumRPM)), lease: lease, reason: "restore protective high target: \(reason)")
+        }
+        for fan in snapshot.fans {
+            try write(.mode(fan: fan.index, value: capability.releaseCommand), lease: lease, reason: "restore release mode: \(reason)")
+        }
+        if capability.unlockAvailable {
+            try write(.unlock(value: capability.unlockOff), lease: lease, reason: "restore unlock off: \(reason)")
+            try pollUnlock(value: capability.unlockOff)
+        }
+
+        try pollNoManualModes(snapshot)
+        try pollManagedModes(snapshot)
+
+        for fan in snapshot.fans {
+            let targetRaw = capturedTargets[fan.index]!
+            try write(.target(fan: fan.index, bytes: targetRaw), lease: lease, reason: "restore captured target: \(reason)")
+        }
+
+        try pollManagedSettle(snapshot: snapshot, capturedTargets: capturedTargets)
+        let finalStatus = try status()
+        try leaseStore.clear(leaseID: lease.id)
+        return FanRestoreResult(
+            restored: true,
+            finalModes: finalStatus.fans.map(\.mode),
+            finalTargets: finalStatus.fans.map(\.targetRPM)
+        )
+    }
+
     private func availability(fanCount: Int, platform: String, fans: [FanStatus], unlockStatusUnavailable: Bool) -> ActiveAvailability {
         var reasons: [String] = []
         if platform != capability.platform { reasons.append("platform mismatch") }
@@ -314,6 +372,33 @@ package final class FanController {
         }
     }
 
+    private func pollNoManualModes(_ status: FanControlStatus) throws {
+        try poll(description: "non-manual fan mode readback") {
+            for fan in status.fans {
+                guard try readUInt8(capability.modeKey(for: fan.index)) != capability.manualCommand else {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
+    private func pollManagedModes(_ status: FanControlStatus) throws {
+        try poll(description: "managed fan mode readback") {
+            for fan in status.fans {
+                guard try readUInt8(capability.modeKey(for: fan.index)) == capability.managedObservedState else {
+                    return false
+                }
+            }
+            if capability.unlockAvailable {
+                guard try readUInt8(capability.unlockKey) == capability.unlockOff else {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
     private func pollTargetsAtMax(_ status: FanControlStatus) throws {
         try poll(description: "max fan target readback") {
             for fan in status.fans {
@@ -343,6 +428,33 @@ package final class FanController {
             return allVerified
         }
         return maxActualRPM
+    }
+
+    private func pollManagedSettle(snapshot: FanControlStatus, capturedTargets: [Int: [UInt8]]) throws {
+        try poll(description: "managed fan restore settle", timeoutSeconds: 30) {
+            if capability.unlockAvailable {
+                guard try readUInt8(capability.unlockKey) == capability.unlockOff else {
+                    return false
+                }
+            }
+            for fan in snapshot.fans {
+                guard try readUInt8(capability.modeKey(for: fan.index)) == capability.managedObservedState else {
+                    return false
+                }
+                guard let targetRaw = capturedTargets[fan.index],
+                      try hardware.read(capability.targetKey(for: fan.index)).bytes == targetRaw
+                else {
+                    return false
+                }
+                let actual = try readFloat(capability.actualKey(for: fan.index))
+                let capturedTarget = FanEncoding.floatValue(targetRaw) ?? 0
+                let idleCeiling = max(fan.minimumRPM, capturedTarget)
+                guard actual <= idleCeiling else {
+                    return false
+                }
+            }
+            return true
+        }
     }
 
     private func privateRollbackAfterBoostFailure(snapshot: FanControlStatus, lease: FanLease, reason: String) {
@@ -417,6 +529,17 @@ package final class FanController {
         case .target(_, let bytes):
             return bytes
         }
+    }
+
+    private func capturedTargetsByFanIndex(_ lease: FanLease) throws -> [Int: [UInt8]] {
+        var targets: [Int: [UInt8]] = [:]
+        for fan in lease.capturedFans {
+            guard targets[fan.index] == nil else {
+                throw FanControlError.restoreFailed("lease contains duplicate captured target for fan \(fan.index)")
+            }
+            targets[fan.index] = fan.targetRaw
+        }
+        return targets
     }
 }
 

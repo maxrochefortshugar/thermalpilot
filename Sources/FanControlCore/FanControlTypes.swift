@@ -100,6 +100,18 @@ public struct FanBoostResult: Equatable, Sendable {
     }
 }
 
+public struct FanRestoreResult: Equatable, Sendable {
+    public let restored: Bool
+    public let finalModes: [UInt8]
+    public let finalTargets: [Float]
+
+    public init(restored: Bool, finalModes: [UInt8], finalTargets: [Float]) {
+        self.restored = restored
+        self.finalModes = finalModes
+        self.finalTargets = finalTargets
+    }
+}
+
 public enum FanEncoding {
     public static func float32LittleEndian(_ value: Float) -> [UInt8] {
         var raw = value.bitPattern.littleEndian
