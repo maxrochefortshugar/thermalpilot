@@ -31,13 +31,11 @@ public struct FanCapabilityResolver {
             throw FanControlError.unsafeState("fan count mismatch: expected \(base.fanCount), got \(fanCount)")
         }
 
-        if try canRead(String(format: "F%dmd", 0)) {
+        if try probeReadable(String(format: "F%dmd", 0)) {
             throw FanControlError.unsupportedModel(model: model, platform: "lowercase mode key path not validated")
         }
-        guard try canRead(String(format: base.modeKeyFormat, 0)) else {
-            throw FanControlError.missingKey("fan mode key")
-        }
-        let unlockAvailable = try canRead("Ftst")
+        _ = try hardware.read(base.modeKey(for: 0))
+        _ = try hardware.read(base.unlockKey)
 
         for index in 0..<fanCount {
             _ = try hardware.read(base.actualKey(for: index))
@@ -47,10 +45,10 @@ public struct FanCapabilityResolver {
             _ = try hardware.read(base.modeKey(for: index))
         }
 
-        return base.withResolvedHardware(modeKeyFormat: base.modeKeyFormat, unlockAvailable: unlockAvailable)
+        return base.withResolvedHardware(modeKeyFormat: base.modeKeyFormat, unlockAvailable: true)
     }
 
-    private func canRead(_ key: String) throws -> Bool {
+    private func probeReadable(_ key: String) throws -> Bool {
         do {
             _ = try hardware.read(try FanKey(key))
             return true
