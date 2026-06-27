@@ -22,6 +22,7 @@ final class FakeSMC: FanHardware {
     private var entries: [String: Entry]
     private var tick = 0
     private var pending: [(applyAt: Int, key: String, bytes: [UInt8])] = []
+    private var scriptedRejections: [(operation: FanWriteOperation, key: String, smcResult: UInt8)] = []
 
     init(entries: [String: Entry]) {
         self.entries = entries
@@ -62,6 +63,24 @@ final class FakeSMC: FanHardware {
         return FanReading(key: key, type: entry.type, size: entry.size, attributes: entry.attributes, bytes: entry.bytes)
     }
 
+    func rejectWrite(operation: FanWriteOperation, key: String, smcResult: UInt8) {
+        scriptedRejections.append((operation: operation, key: key, smcResult: smcResult))
+    }
+
+    func setRawEntryBytes(_ key: String, _ bytes: [UInt8]) {
+        if var entry = entries[key] {
+            entry.bytes = bytes
+            entry.size = UInt32(bytes.count)
+            entries[key] = entry
+        } else {
+            entries[key] = Entry(type: "raw ", size: UInt32(bytes.count), attributes: 0, bytes: bytes)
+        }
+    }
+
+    func rawEntryBytes(_ key: String) -> [UInt8]? {
+        entries[key]?.bytes
+    }
+
     func write(_ operation: FanWriteOperation, capability: FanCapability, reason: String) throws -> FanWriteResult {
         let key: FanKey
         let bytes: [UInt8]
@@ -81,6 +100,10 @@ final class FakeSMC: FanHardware {
             throw FanControlError.missingKey(key.stringValue)
         }
 
+        if let rejection = scriptedRejections.first(where: { $0.operation == operation && $0.key == key.stringValue }) {
+            return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.smcResult)
+        }
+
         if case .mode(_, 1) = operation, entries["Ftst"]?.bytes != [1] {
             return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
         }
@@ -91,7 +114,16 @@ final class FakeSMC: FanHardware {
         }
 
         if key.stringValue.hasSuffix("Md") {
-            pending.append((applyAt: tick + 2, key: key.stringValue, bytes: bytes))
+            if case .mode(_, 0) = operation {
+                pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0]))
+                pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [3]))
+            } else {
+                pending.append((applyAt: tick + 2, key: key.stringValue, bytes: bytes))
+            }
+            return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
+        }
+
+        if case .target(let fan, _) = operation, entries["F\(fan)Md"]?.bytes != [1] {
             return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
         }
 

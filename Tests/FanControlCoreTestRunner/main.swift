@@ -142,6 +142,83 @@ func testFakeSMCRejectsManualBeforeUnlockSettles() throws {
     try expect(result.smcResult == 0x82, "manual mode should be rejected before unlock")
 }
 
+func testFakeSMCReleaseModeSettlesBackToManaged() throws {
+    let smc = FakeSMC.mac165()
+
+    let result = try smc.write(.mode(fan: 0, value: 0), capability: .mac165ValidatedOneShot, reason: "release fan")
+    try expect(result.smcResult == 0, "release mode write should be accepted")
+
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let intermediate = try smc.read(try FanKey("F0Md"))
+    try expect(intermediate.bytes == [0], "release should first read back as release mode")
+
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let settled = try smc.read(try FanKey("F0Md"))
+    try expect(settled.bytes == [3], "release should settle back to managed mode")
+}
+
+func testFakeSMCPreManualTargetWriteDoesNotStickImmediately() throws {
+    let smc = FakeSMC.mac165()
+    let maxBytes = FanEncoding.float32LittleEndian(5_777)
+
+    let result = try smc.write(.target(fan: 0, bytes: maxBytes), capability: .mac165ValidatedOneShot, reason: "target before manual")
+    try expect(result.smcResult == 0, "pre-manual target write should be accepted")
+
+    let readback = try smc.read(try FanKey("F0Tg"))
+    try expect(readback.bytes != maxBytes, "pre-manual target write should not immediately stick")
+}
+
+func testFakeSMCPostManualTargetWriteSticks() throws {
+    let smc = FakeSMC.mac165()
+    let maxBytes = FanEncoding.float32LittleEndian(5_777)
+
+    _ = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "unlock")
+    smc.advanceTick()
+    smc.advanceTick()
+    smc.advanceTick()
+    _ = try smc.write(.mode(fan: 0, value: 1), capability: .mac165ValidatedOneShot, reason: "manual")
+    smc.advanceTick()
+    smc.advanceTick()
+
+    let result = try smc.write(.target(fan: 0, bytes: maxBytes), capability: .mac165ValidatedOneShot, reason: "target after manual")
+    try expect(result.smcResult == 0, "post-manual target write should be accepted")
+
+    let readback = try smc.read(try FanKey("F0Tg"))
+    try expect(readback.bytes == maxBytes, "post-manual target write should stick")
+
+    smc.advanceTick()
+    let actual = FanEncoding.floatValue(try smc.read(try FanKey("F0Ac")).bytes) ?? 0
+    try expect(actual > 0, "post-manual target should drive ramp")
+}
+
+func testFakeSMCScriptedModeWriteRejection() throws {
+    let smc = FakeSMC.mac165()
+    smc.rejectWrite(operation: .mode(fan: 1, value: 1), key: "F1Md", smcResult: 0x84)
+
+    let result = try smc.write(.mode(fan: 1, value: 1), capability: .mac165ValidatedOneShot, reason: "scripted rejection")
+
+    try expect(result.smcResult == 0x84, "scripted F1Md=1 rejection should be returned")
+    try expect(smc.writes.last?.key == "F1Md", "scripted rejection should still record the target key")
+}
+
+func testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets() throws {
+    let smc = FakeSMC.mac165()
+    let fan0Target = FanEncoding.float32LittleEndian(2_222)
+    let fan1Target = FanEncoding.float32LittleEndian(3_333)
+
+    smc.setRawEntryBytes("F0Tg", fan0Target)
+    smc.setRawEntryBytes("F1Tg", fan1Target)
+
+    try expect(smc.rawEntryBytes("F0Tg") == fan0Target, "raw helper should read mutated F0Tg bytes")
+    try expect(smc.rawEntryBytes("F1Tg") == fan1Target, "raw helper should read mutated F1Tg bytes")
+    try expect(try smc.read(try FanKey("F0Tg")).bytes == fan0Target, "raw helper should mutate readable F0Tg entry")
+    try expect(try smc.read(try FanKey("F1Tg")).bytes == fan1Target, "raw helper should mutate readable F1Tg entry")
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("Core boundary", testCoreBoundary),
     ("Mac16,5 capability", testMac165Capability),
@@ -155,7 +232,12 @@ let tests: [(String, () throws -> Void)] = [
     ("Resolver propagates missing Ftst", testResolverPropagatesMissingFtst),
     ("Resolver propagates unreadable Ftst", testResolverPropagatesUnreadableFtst),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
-    ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles)
+    ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
+    ("FakeSMC release mode settles back to managed", testFakeSMCReleaseModeSettlesBackToManaged),
+    ("FakeSMC pre-manual target write does not stick immediately", testFakeSMCPreManualTargetWriteDoesNotStickImmediately),
+    ("FakeSMC post-manual target write sticks", testFakeSMCPostManualTargetWriteSticks),
+    ("FakeSMC scripted mode write rejection", testFakeSMCScriptedModeWriteRejection),
+    ("FakeSMC raw entry bytes helper mutates and reads targets", testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets)
 ]
 
 var failures = 0
