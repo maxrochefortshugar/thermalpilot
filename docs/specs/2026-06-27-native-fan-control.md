@@ -126,6 +126,8 @@ Interpretation for M4:
   art, but must be verified locally before enabling active control.
 - `Ftst = 1` is the expected M1-M4 unlock step based on ThermalForge prior art.
 - `Ftst = 0` is the expected restore step.
+- `F{n}Tg = 0` was observed while fans were system controlled. Treat this as
+  "no manual target exposed", not proof that Apple's desired fan speed is zero.
 
 ## Value Encoding
 
@@ -199,15 +201,18 @@ For each allowlisted model:
 
 1. Read `FNum`; require `1...8`.
 2. Read every fan's `Ac`, `Mn`, `Mx`, `Tg`, and mode key.
-3. Validate each `Mn > 0`, `Mx > Mn`, and `Mx <= 10000`.
-4. Create a lease marker on disk before writing.
-5. If `Ftst` exists, write `Ftst = 1`.
-6. Write each fan mode key to manual: expected value `1`.
-7. For each fan, write `F{n}Tg = F{n}Mx`.
-8. Poll actual RPM for up to 30 seconds.
-9. Consider boost verified when every fan's actual RPM is at least
+3. Save raw pre-boost mode and target bytes in the lease marker.
+4. Refuse to take over an already-manual fan unless an existing MLX & Chill
+   lease owns it.
+5. Validate each `Mn > 0`, `Mx > Mn`, and `Mx <= 10000`.
+6. Create a lease marker on disk before writing.
+7. If `Ftst` exists, write `Ftst = 1`.
+8. Write each fan mode key to manual: expected value `1`.
+9. For each fan, write `F{n}Tg = F{n}Mx`.
+10. Poll actual RPM for up to 30 seconds.
+11. Consider boost verified when every fan's actual RPM is at least
    `0.85 * maxRPM`.
-10. Keep heartbeat active until lease ends or workload exits.
+12. Keep heartbeat active until lease ends or workload exits.
 
 If any step fails, immediately call `restoreAuto("boost failed")`.
 
@@ -218,14 +223,16 @@ Restore must be safe to call repeatedly.
 For each fan:
 
 1. Write mode key to auto: expected value `0`.
-2. Write `F{n}Tg = 0`.
+2. Restore the captured pre-boost target bytes.
+3. If the captured target was `0`, write `F{n}Tg = 0` as the clear-manual-target
+   operation.
 
 Then:
 
 1. If `Ftst` exists, write `Ftst = 0`.
 2. Re-read mode, target, and actual RPM.
-3. Restore is verified if mode is `0` or returns to known system state and target
-   is `0`.
+3. Restore is verified if mode is `0` or returns to known system state, and
+   target is either the captured target or the model's validated clear value.
 4. Clear the lease marker only after restore is verified.
 
 If restore cannot be verified, leave the marker in place and print a clear
@@ -265,8 +272,10 @@ Restore auto on:
 - Active control requires a model allowlist entry.
 - Active control requires explicit user opt-in.
 - Do not write any key outside the required fan-control key set.
-- Never set target below `F{n}Mn`.
-- Never set target above `F{n}Mx`.
+- Never set a manual target below `F{n}Mn`.
+- Never set a manual target above `F{n}Mx`.
+- `F{n}Tg = 0` is allowed only during auto restore, after mode is no longer
+  manual, and only for models where zero is validated as a safe clear value.
 - Initial active mode only supports max boost and auto restore.
 - No quiet/manual/custom-RPM mode until max/auto is validated.
 - The read-only binary must not link or expose write symbols.
@@ -299,12 +308,14 @@ values:
   manual_mode: 1
   auto_mode: 0
   observed_system_mode: 3
+  target_clear: 0
   unlock_on: 1
   unlock_off: 0
 validation:
   read: verified
   boost_max: unverified
   restore_auto: unverified
+  target_clear: unverified
 active_control:
   enabled: false
 ```
@@ -314,7 +325,8 @@ Set `active_control.enabled: true` only after local hardware validation proves:
 - `Ftst = 1` unlock works.
 - `F{n}Md = 1` manual mode works.
 - `F{n}Tg = F{n}Mx` ramps actual fan RPM.
-- `F{n}Md = 0`, `F{n}Tg = 0`, and `Ftst = 0` restore automatic control.
+- `F{n}Md = 0`, captured target restore or validated target clear, and
+  `Ftst = 0` restore automatic control.
 - Crash/watchdog restore works.
 - Sleep/wake restore works.
 
