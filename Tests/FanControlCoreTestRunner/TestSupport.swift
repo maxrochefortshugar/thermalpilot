@@ -52,7 +52,10 @@ func expectThrows(_ message: String, _ body: () throws -> Void, matching isExpec
 
 func repoRootFromThisFile() -> URL {
     var url = URL(fileURLWithPath: #filePath)
-    while url.lastPathComponent != "mlx-chill" && url.path != "/" {
+    while url.path != "/" {
+        if FileManager.default.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
+            return url
+        }
         url.deleteLastPathComponent()
     }
     return url

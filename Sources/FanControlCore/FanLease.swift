@@ -120,7 +120,7 @@ public struct FanLeaseStore {
     public static func defaultStore() -> FanLeaseStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
-        return FanLeaseStore(directory: base.appendingPathComponent("MLXChill/fan-control", isDirectory: true))
+        return FanLeaseStore(directory: base.appendingPathComponent("Coldfront/fan-control", isDirectory: true))
     }
 
     public func claim(_ lease: FanLease) throws {

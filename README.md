@@ -1,31 +1,30 @@
-# MLX & Chill
+# Coldfront
 
-MLX & Chill is a read-only macOS fan and thermal probe for local AI workloads.
+Coldfront is a macOS fan and thermal probe with guarded fan-control validation
+for Apple Silicon Macs.
 
 The first release focuses on trustworthy telemetry: fan count, current/min/max
 RPM, selected temperature sensors, selected power sensors, and explicit SMC key
-reads with raw bytes for auditability.
+reads with raw bytes for auditability. Active fan control is still gated behind
+short validation flows and recovery safeguards.
 
 The longer-term goal is a native open source thermal assistant for Apple
-Silicon machines: boost fans before local MLX/AI inference, then restore
-Apple's automatic fan control.
+Silicon machines: boost fans before local AI inference or other heavy work,
+then restore Apple's automatic fan control.
 
 ## Status
 
 - macOS only
 - Apple Silicon tested on `Mac16,5` / M4 Max
-- read-only SMC access
-- no fan-control writes
+- read-only SMC telemetry by default
+- bounded 10-second hardware validation command
+- normal boost and workload execution remain disabled
 - no background daemon
-- no sudo requirement for the default probe
+- no sudo requirement for telemetry reads
 
-`mlx-chill-control` is present for active-control development and command
-parsing, but boost execution remains disabled until crash recovery,
-parent-death recovery, missed-heartbeat recovery, lease-expiry recovery, signal
-recovery, and sleep/wake recovery are validated on hardware. `auto` currently
-performs lease inspection only; recovery writes remain disabled until validation
-completes. The default
-`mlx-chill` executable remains read-only.
+`auto` currently performs lease inspection only; recovery writes remain
+disabled until validation completes. `validate` is the only active write path
+and is limited to 10 seconds.
 
 ## Build
 
@@ -36,19 +35,31 @@ swift build -c release
 ## Run
 
 ```sh
-.build/release/mlx-chill
+.build/release/coldfront
 ```
 
 Read explicit SMC keys:
 
 ```sh
-.build/release/mlx-chill FNum F0Ac F0Mn F0Mx F0Tg
+.build/release/coldfront read FNum F0Ac F0Mn F0Mx F0Tg
+```
+
+Check the guarded active-control status:
+
+```sh
+.build/release/coldfront status --json
+```
+
+Run the bounded validation path:
+
+```sh
+sudo .build/release/coldfront validate --for 10s --i-understand-active-fan-control
 ```
 
 Example output:
 
 ```text
-MLX & Chill (read-only)
+Coldfront
 
 SMC
   Status: readable
@@ -66,27 +77,31 @@ Fans
 ## Test
 
 The installed Command Line Tools on the original development machine did not
-expose `XCTest` or Swift `Testing` to SwiftPM, so the project uses a small
-executable test runner for deterministic decoder coverage:
+expose `XCTest` or Swift `Testing` to SwiftPM, so the project uses small
+executable test runners for deterministic coverage:
 
 ```sh
 swift run FanProbeCoreTestRunner
+swift run FanControlCoreTestRunner
 ```
 
-## Safety model
+## Safety Model
 
-The default `mlx-chill` executable intentionally exposes no SMC write API. The
-C bridge only supports:
+Coldfront uses one executable, but telemetry remains the default behavior.
+Active writes are reachable only through explicit control commands with an
+acknowledgement flag.
+
+The C read bridge only supports:
 
 - open SMC user client
 - close SMC user client
 - read SMC key
 - read SMC key by index
 
-Active fan-control development lives behind the separate `mlx-chill-control`
-executable. Boost and workload execution remain disabled until crash recovery,
-parent-death recovery, missed-heartbeat recovery, lease-expiry recovery, signal
-recovery, and sleep/wake recovery are validated on hardware.
+The active write stack uses package-scoped typed operations, not raw public SMC
+writes. Normal `boost` and `run --boost` execution remain disabled until crash
+recovery, parent-death recovery, missed-heartbeat recovery, lease-expiry
+recovery, signal recovery, and sleep/wake recovery are validated on hardware.
 
 ## Roadmap
 
@@ -94,7 +109,7 @@ recovery, and sleep/wake recovery are validated on hardware.
 - Add a compact menu-bar or terminal dashboard.
 - Record bounded local thermal history.
 - Add native max-boost and auto-restore fan control.
-- Add a workload wrapper for MLX inference commands.
+- Add a workload wrapper for local inference and other heavy commands.
 - Keep all active fan-control work opt-in and auditable.
 
 ## License

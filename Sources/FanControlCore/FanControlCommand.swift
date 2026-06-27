@@ -24,20 +24,17 @@ public enum FanControlCommand: Equatable, Sendable {
             return .auto
 
         case "boost":
-            guard args.count >= 2, args[1] == "max" else {
-                throw FanControlCommandParseError.usage("expected: boost max [--for duration] --i-understand-active-fan-control")
-            }
-            let options = try parseBoostOptions(Array(args.dropFirst(2)), maxDurationSeconds: maxDurationSeconds)
+            let options = try parseBoostOptions(Array(args.dropFirst()), maxDurationSeconds: maxDurationSeconds)
             return .boostMax(durationSeconds: options.durationSeconds, acknowledgedRisk: options.acknowledgedRisk)
 
         case "run":
-            guard args.count >= 3, args[1] == "--boost", args[2] == "max" else {
-                throw FanControlCommandParseError.usage("expected: run --boost max [--for duration] --i-understand-active-fan-control -- <workload...>")
+            guard args.count >= 2, args[1] == "--boost" else {
+                throw FanControlCommandParseError.usage("expected: run --boost [--for duration] --i-understand-active-fan-control -- <workload...>")
             }
-            guard let delimiterIndex = args.dropFirst(3).firstIndex(of: "--") else {
+            guard let delimiterIndex = args.dropFirst(2).firstIndex(of: "--") else {
                 throw FanControlCommandParseError.missingRunDelimiter
             }
-            let controlArgs = Array(args[3..<delimiterIndex])
+            let controlArgs = Array(args[2..<delimiterIndex])
             let workload = Array(args[(delimiterIndex + 1)...])
             guard !workload.isEmpty else {
                 throw FanControlCommandParseError.emptyWorkload
@@ -50,11 +47,8 @@ public enum FanControlCommand: Equatable, Sendable {
             )
 
         case "validate":
-            guard args.count >= 2, args[1] == "one-shot" else {
-                throw FanControlCommandParseError.usage("expected: validate one-shot [--for 10s] --i-understand-active-fan-control")
-            }
             let options = try parseBoostOptions(
-                Array(args.dropFirst(2)),
+                Array(args.dropFirst()),
                 maxDurationSeconds: 10,
                 defaultDurationSeconds: 10
             )

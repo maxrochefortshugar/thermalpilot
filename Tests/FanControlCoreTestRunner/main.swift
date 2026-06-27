@@ -71,6 +71,15 @@ func testSMCControlTransportKeyDataABILayout() throws {
     try expect(abi.acceptsOutputSize(80), "SMC raw call should accept full key data output")
 }
 
+func testPackageDefinesSingleColdfrontExecutable() throws {
+    let manifest = try repositorySourceText("Package.swift")
+
+    try expect(manifest.contains("name: \"coldfront\""), "package should be named coldfront")
+    try expect(manifest.contains(".executable(name: \"coldfront\", targets: [\"coldfront\"])"), "package should expose one coldfront executable product")
+    try expect(!manifest.contains("mlx-chill"), "package manifest should not expose mlx-chill products or targets")
+    try expect(!manifest.contains("mlx-chill-control"), "package manifest should not expose mlx-chill-control products or targets")
+}
+
 func smcControlTransportSource() throws -> String {
     try repositorySourceText("Sources/SMCControlTransport/SMCControlTransport.swift")
 }
@@ -111,8 +120,8 @@ struct ProcessResult {
     let stderr: String
 }
 
-func runControlExecutable(_ arguments: [String]) throws -> ProcessResult {
-    let executableURL = try controlExecutableURL()
+func runColdfrontExecutable(_ arguments: [String]) throws -> ProcessResult {
+    let executableURL = try coldfrontExecutableURL()
     return try runProcess(
         executableURL: executableURL,
         arguments: arguments,
@@ -120,21 +129,21 @@ func runControlExecutable(_ arguments: [String]) throws -> ProcessResult {
     )
 }
 
-func controlExecutableURL() throws -> URL {
+func coldfrontExecutableURL() throws -> URL {
     let repoRoot = try repositoryRootURL()
     let buildResult = try runProcess(
         executableURL: URL(fileURLWithPath: "/usr/bin/env"),
-        arguments: ["swift", "build", "--product", "mlx-chill-control"],
+        arguments: ["swift", "build", "--product", "coldfront"],
         currentDirectoryURL: repoRoot
     )
 
     guard buildResult.exitCode == 0 else {
-        throw TestFailure(description: "failed to build mlx-chill-control: \(buildResult.stderr)\(buildResult.stdout)")
+        throw TestFailure(description: "failed to build coldfront: \(buildResult.stderr)\(buildResult.stdout)")
     }
 
-    let executableURL = repoRoot.appendingPathComponent(".build/debug/mlx-chill-control")
+    let executableURL = repoRoot.appendingPathComponent(".build/debug/coldfront")
     guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
-        throw TestFailure(description: "missing built mlx-chill-control executable at \(executableURL.path)")
+        throw TestFailure(description: "missing built coldfront executable at \(executableURL.path)")
     }
 
     return executableURL
@@ -161,21 +170,21 @@ func runProcess(executableURL: URL, arguments: [String], currentDirectoryURL: UR
     )
 }
 
-func testControlExecutableRoutesDisabledGateThroughCommandContract() throws {
-    let source = try repositorySourceText("Sources/mlx-chill-control/main.swift")
+func testColdfrontExecutableRoutesDisabledGateThroughCommandContract() throws {
+    let source = try repositorySourceText("Sources/coldfront/main.swift")
 
     try expect(
         source.contains("FanControlCommandContract.disabledActiveControlResponse"),
-        "mlx-chill-control should route disabled active-control output through the command contract"
+        "coldfront should route disabled active-control output through the command contract"
     )
 }
 
 func testDisabledActiveControlResponseFailsBoostCommands() throws {
     let boost = try FanControlCommand.parse([
-        "boost", "max", "--for", "10m", "--i-understand-active-fan-control"
+        "boost", "--for", "10m", "--i-understand-active-fan-control"
     ])
     let run = try FanControlCommand.parse([
-        "run", "--boost", "max", "--for", "10m", "--i-understand-active-fan-control",
+        "run", "--boost", "--for", "10m", "--i-understand-active-fan-control",
         "--", "/usr/bin/true"
     ])
 
@@ -188,15 +197,15 @@ func testDisabledActiveControlResponseFailsBoostCommands() throws {
         capability: .mac165ValidatedOneShot
     )
 
-    try expect(boostResponse.exitCode == 1, "disabled boost max should exit nonzero")
-    try expect(runResponse.exitCode == 1, "disabled run --boost max should exit nonzero")
+    try expect(boostResponse.exitCode == 1, "disabled boost should exit nonzero")
+    try expect(runResponse.exitCode == 1, "disabled run --boost should exit nonzero")
     try expect(
         boostResponse.stdout == "active fan control is disabled for Mac16,5\n",
-        "disabled boost max should print the disabled active-control message"
+        "disabled boost should print the disabled active-control message"
     )
     try expect(
         runResponse.stdout == "active fan control is disabled for Mac16,5\n",
-        "disabled run --boost max should print the disabled active-control message"
+        "disabled run --boost should print the disabled active-control message"
     )
 }
 
@@ -220,41 +229,41 @@ func testDisabledStatusJSONResponseIsParseable() throws {
 }
 
 func testControlExecutableDisabledBoostExitsBeforeFanControl() throws {
-    let result = try runControlExecutable([
-        "boost", "max", "--for", "10m", "--i-understand-active-fan-control"
+    let result = try runColdfrontExecutable([
+        "boost", "--for", "10m", "--i-understand-active-fan-control"
     ])
 
-    try expect(result.exitCode == 1, "disabled executable boost max should exit 1")
+    try expect(result.exitCode == 1, "disabled executable boost should exit 1")
     try expect(
         result.stdout == "active fan control is disabled for Mac16,5\n",
-        "disabled executable boost max should print disabled message"
+        "disabled executable boost should print disabled message"
     )
 }
 
 func testControlExecutableDisabledRunDoesNotStartWorkload() throws {
     let marker = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-chill-control-disabled-\(UUID().uuidString)")
+        .appendingPathComponent("coldfront-disabled-\(UUID().uuidString)")
     try? FileManager.default.removeItem(at: marker)
     defer { try? FileManager.default.removeItem(at: marker) }
 
-    let result = try runControlExecutable([
-        "run", "--boost", "max", "--for", "10m", "--i-understand-active-fan-control",
+    let result = try runColdfrontExecutable([
+        "run", "--boost", "--for", "10m", "--i-understand-active-fan-control",
         "--", "/bin/sh", "-c", "touch \(marker.path)"
     ])
 
-    try expect(result.exitCode == 1, "disabled executable run --boost max should exit 1")
+    try expect(result.exitCode == 1, "disabled executable run --boost should exit 1")
     try expect(
         result.stdout == "active fan control is disabled for Mac16,5\n",
-        "disabled executable run --boost max should print disabled message"
+        "disabled executable run --boost should print disabled message"
     )
     try expect(
         !FileManager.default.fileExists(atPath: marker.path),
-        "disabled executable run --boost max should not start workload"
+        "disabled executable run --boost should not start workload"
     )
 }
 
 func testControlExecutableStatusJSONReportsDisabledFlags() throws {
-    let result = try runControlExecutable(["status", "--json"])
+    let result = try runColdfrontExecutable(["status", "--json"])
 
     try expect(result.exitCode == 0, "executable status --json should exit zero")
     let object = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any]
@@ -283,16 +292,16 @@ func testReadmeDocumentsAutoLeaseInspectionOnly() throws {
 }
 
 func testCLIParsesBoundedBoostDuration() throws {
-    let command = try FanControlCommand.parse(["boost", "max", "--for", "10m", "--i-understand-active-fan-control"])
-    let maxCommand = try FanControlCommand.parse(["boost", "max", "--for", "120m", "--i-understand-active-fan-control"])
+    let command = try FanControlCommand.parse(["boost", "--for", "10m", "--i-understand-active-fan-control"])
+    let maxCommand = try FanControlCommand.parse(["boost", "--for", "120m", "--i-understand-active-fan-control"])
 
     try expect(
         command == .boostMax(durationSeconds: 600, acknowledgedRisk: true),
-        "boost max should parse a bounded minute duration with explicit acknowledgement"
+        "boost should parse a bounded minute duration with explicit acknowledgement"
     )
     try expect(
         maxCommand == .boostMax(durationSeconds: 7_200, acknowledgedRisk: true),
-        "boost max should accept a two-hour duration boundary with explicit acknowledgement"
+        "boost should accept a two-hour duration boundary with explicit acknowledgement"
     )
 }
 
@@ -310,19 +319,19 @@ func testCLIParsesAuto() throws {
 
 func testCLIParsesTenSecondValidationOneShot() throws {
     let command = try FanControlCommand.parse([
-        "validate", "one-shot", "--for", "10s", "--i-understand-active-fan-control"
+        "validate", "--for", "10s", "--i-understand-active-fan-control"
     ])
 
     try expect(
         command == .validateOneShot(durationSeconds: 10, acknowledgedRisk: true),
-        "validation one-shot should parse an explicit ten second duration"
+        "validation should parse an explicit ten second duration"
     )
 }
 
 func testCLIRejectsValidationOneShotOverTenSeconds() throws {
-    try expectThrows("validation one-shot should reject durations above ten seconds", {
+    try expectThrows("validation should reject durations above ten seconds", {
         _ = try FanControlCommand.parse([
-            "validate", "one-shot", "--for", "11s", "--i-understand-active-fan-control"
+            "validate", "--for", "11s", "--i-understand-active-fan-control"
         ])
     }, matching: { error in
         error as? FanControlCommandParseError == .durationOutOfBounds(seconds: 11, maxSeconds: 10)
@@ -330,22 +339,22 @@ func testCLIRejectsValidationOneShotOverTenSeconds() throws {
 }
 
 func testCLIUsesDefaultBoostDuration() throws {
-    let command = try FanControlCommand.parse(["boost", "max", "--i-understand-active-fan-control"])
+    let command = try FanControlCommand.parse(["boost", "--i-understand-active-fan-control"])
 
     try expect(
         command == .boostMax(durationSeconds: 600, acknowledgedRisk: true),
-        "boost max should default to a 600 second duration"
+        "boost should default to a 600 second duration"
     )
 }
 
 func testCLIRejectsMissingAcknowledgement() throws {
-    try expectThrows("boost max should reject missing acknowledgement", {
-        _ = try FanControlCommand.parse(["boost", "max", "--for", "10m"])
+    try expectThrows("boost should reject missing acknowledgement", {
+        _ = try FanControlCommand.parse(["boost", "--for", "10m"])
     }, matching: { _ in true })
 
     try expectThrows("run should reject acknowledgement after workload delimiter", {
         _ = try FanControlCommand.parse([
-            "run", "--boost", "max", "--for", "10m",
+            "run", "--boost", "--for", "10m",
             "--", "--i-understand-active-fan-control", "python", "script.py"
         ])
     }, matching: { error in
@@ -354,26 +363,26 @@ func testCLIRejectsMissingAcknowledgement() throws {
 }
 
 func testCLIRejectsLeaseOverTwoHours() throws {
-    try expectThrows("boost max should reject duration above two hours", {
-        _ = try FanControlCommand.parse(["boost", "max", "--for", "121m", "--i-understand-active-fan-control"])
+    try expectThrows("boost should reject duration above two hours", {
+        _ = try FanControlCommand.parse(["boost", "--for", "121m", "--i-understand-active-fan-control"])
     }, matching: { _ in true })
 }
 
 func testCLIRunParsesWorkloadAndDuration() throws {
     let command = try FanControlCommand.parse([
-        "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control",
+        "run", "--boost", "--for", "1s", "--i-understand-active-fan-control",
         "--", "echo", "hello"
     ])
 
     try expect(
         command == .runBoostMax(durationSeconds: 1, workload: ["echo", "hello"], acknowledgedRisk: true),
-        "run --boost max should parse control duration and workload"
+        "run --boost should parse control duration and workload"
     )
 }
 
 func testCLIRunIgnoresWorkloadFlagsAfterDelimiter() throws {
     let command = try FanControlCommand.parse([
-        "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control",
+        "run", "--boost", "--for", "1s", "--i-understand-active-fan-control",
         "--", "worker", "--for", "121m", "--not-a-control-flag"
     ])
 
@@ -390,7 +399,7 @@ func testCLIRunIgnoresWorkloadFlagsAfterDelimiter() throws {
 func testCLIRunRejectsMissingDelimiter() throws {
     try expectThrows("run should reject missing workload delimiter", {
         _ = try FanControlCommand.parse([
-            "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control", "echo"
+            "run", "--boost", "--for", "1s", "--i-understand-active-fan-control", "echo"
         ])
     }, matching: { _ in true })
 }
@@ -398,30 +407,30 @@ func testCLIRunRejectsMissingDelimiter() throws {
 func testCLIRunRejectsEmptyWorkload() throws {
     try expectThrows("run should reject empty workload", {
         _ = try FanControlCommand.parse([
-            "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control", "--"
+            "run", "--boost", "--for", "1s", "--i-understand-active-fan-control", "--"
         ])
     }, matching: { _ in true })
 }
 
 func testCLIRejectsUnknownDurationUnit() throws {
-    try expectThrows("boost max should reject unknown duration unit", {
-        _ = try FanControlCommand.parse(["boost", "max", "--for", "1h", "--i-understand-active-fan-control"])
+    try expectThrows("boost should reject unknown duration unit", {
+        _ = try FanControlCommand.parse(["boost", "--for", "1h", "--i-understand-active-fan-control"])
     }, matching: { _ in true })
 
-    try expectThrows("boost max should reject fractional minute duration", {
-        _ = try FanControlCommand.parse(["boost", "max", "--for", "1.5m", "--i-understand-active-fan-control"])
+    try expectThrows("boost should reject fractional minute duration", {
+        _ = try FanControlCommand.parse(["boost", "--for", "1.5m", "--i-understand-active-fan-control"])
     }, matching: { _ in true })
 }
 
 func testCLIRejectsZeroDuration() throws {
-    try expectThrows("boost max should reject zero duration", {
-        _ = try FanControlCommand.parse(["boost", "max", "--for", "0s", "--i-understand-active-fan-control"])
+    try expectThrows("boost should reject zero duration", {
+        _ = try FanControlCommand.parse(["boost", "--for", "0s", "--i-understand-active-fan-control"])
     }, matching: { _ in true })
 }
 
 func testCLIRejectsNegativeDuration() throws {
-    try expectThrows("boost max should reject negative duration", {
-        _ = try FanControlCommand.parse(["boost", "max", "--for", "-1s", "--i-understand-active-fan-control"])
+    try expectThrows("boost should reject negative duration", {
+        _ = try FanControlCommand.parse(["boost", "--for", "-1s", "--i-understand-active-fan-control"])
     }, matching: { _ in true })
 }
 
@@ -2020,7 +2029,7 @@ func testLease(
 
 func temporaryDirectory(_ name: String) -> URL {
     let root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-chill-fan-control-tests", isDirectory: true)
+        .appendingPathComponent("coldfront-fan-control-tests", isDirectory: true)
         .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
     try? FileManager.default.removeItem(at: root)
     return root
@@ -2242,18 +2251,19 @@ let tests: [(String, () throws -> Void)] = [
     ("SMCControlTransport keeps raw write private", testSMCControlTransportKeepsRawWritePrivate),
     ("SMCControlTransport writes only typed operations from capability", testSMCControlTransportWritesOnlyTypedOperationsFromCapability),
     ("SMCControlTransport SMCKeyData ABI layout", testSMCControlTransportKeyDataABILayout),
-    ("Control executable routes disabled gate through command contract", testControlExecutableRoutesDisabledGateThroughCommandContract),
+    ("Package defines single coldfront executable", testPackageDefinesSingleColdfrontExecutable),
+    ("Coldfront executable routes disabled gate through command contract", testColdfrontExecutableRoutesDisabledGateThroughCommandContract),
     ("Disabled active-control response fails boost commands", testDisabledActiveControlResponseFailsBoostCommands),
     ("Disabled status JSON response is parseable", testDisabledStatusJSONResponseIsParseable),
-    ("Control executable disabled boost exits before fan control", testControlExecutableDisabledBoostExitsBeforeFanControl),
-    ("Control executable disabled run does not start workload", testControlExecutableDisabledRunDoesNotStartWorkload),
-    ("Control executable status JSON reports disabled flags", testControlExecutableStatusJSONReportsDisabledFlags),
+    ("Coldfront executable disabled boost exits before fan control", testControlExecutableDisabledBoostExitsBeforeFanControl),
+    ("Coldfront executable disabled run does not start workload", testControlExecutableDisabledRunDoesNotStartWorkload),
+    ("Coldfront executable status JSON reports disabled flags", testControlExecutableStatusJSONReportsDisabledFlags),
     ("README documents auto lease inspection only", testReadmeDocumentsAutoLeaseInspectionOnly),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
     ("CLI parses auto", testCLIParsesAuto),
-    ("CLI parses ten second validation one-shot", testCLIParsesTenSecondValidationOneShot),
-    ("CLI rejects validation one-shot over ten seconds", testCLIRejectsValidationOneShotOverTenSeconds),
+    ("CLI parses ten second validation", testCLIParsesTenSecondValidationOneShot),
+    ("CLI rejects validation over ten seconds", testCLIRejectsValidationOneShotOverTenSeconds),
     ("CLI uses default boost duration", testCLIUsesDefaultBoostDuration),
     ("CLI rejects missing acknowledgement", testCLIRejectsMissingAcknowledgement),
     ("CLI rejects lease over two hours", testCLIRejectsLeaseOverTwoHours),
