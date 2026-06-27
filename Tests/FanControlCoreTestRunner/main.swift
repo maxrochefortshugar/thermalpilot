@@ -314,6 +314,134 @@ func testStatusReportsFanMinMaxOutOfBounds() throws {
     try expect(status.activeAvailability.reasons.contains("fan min/max out of bounds"), "out-of-bounds fan min/max reason should be included")
 }
 
+func testLeaseRoundTripsCapturedPreBoostBytesAndHeartbeatUpdates() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-roundtrip"))
+    let lease = testLease(
+        heartbeatAtUnix: 1_800_000_005,
+        capturedFans: [
+            CapturedFanState(index: 0, modeRaw: [3], targetRaw: [0x00, 0x00, 0x7A, 0x45]),
+            CapturedFanState(index: 1, modeRaw: [3], targetRaw: [0x00, 0x80, 0xBB, 0x45])
+        ]
+    )
+
+    try store.claim(lease)
+
+    try expect(store.read() == lease, "lease should round-trip all captured pre-boost bytes")
+    try store.heartbeat(nowUnix: 1_800_000_020)
+    let updated = try store.read()
+    try expect(updated.id == lease.id, "heartbeat should preserve lease identity")
+    try expect(updated.capturedFans == lease.capturedFans, "heartbeat should preserve captured fan bytes")
+    try expect(updated.heartbeatAtUnix == 1_800_000_020, "heartbeat should update heartbeat timestamp")
+}
+
+func testDuplicateLeaseClaimFails() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-duplicate"))
+    try store.claim(testLease())
+
+    try expectThrows("duplicate lease claim should fail", {
+        try store.claim(testLease(id: UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!))
+    }, matching: { error in
+        error as? FanLeaseStoreError == .leaseAlreadyExists
+    })
+}
+
+func testRecoveryDecisionNoLease() throws {
+    let controller = leaseDecisionController(store: FanLeaseStore(directory: temporaryDirectory("lease-no-current")))
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_000, currentParentPID: 100)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: false, reason: .noLease), "missing lease should not restore")
+}
+
+func testRecoveryDecisionActiveLease() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-active"))
+    try store.claim(testLease(expiresAtUnix: 1_800_000_100, heartbeatAtUnix: 1_800_000_000, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_014, currentParentPID: 100)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: false, reason: .activeLease), "active lease should not restore")
+}
+
+func testRecoveryDecisionMissedHeartbeatRestores() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-missed-heartbeat"))
+    try store.claim(testLease(expiresAtUnix: 1_800_000_100, heartbeatAtUnix: 1_800_000_000, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_016, currentParentPID: 100)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: true, reason: .missedHeartbeat), "missed heartbeat should restore")
+}
+
+func testRecoveryDecisionExpiredLeaseRestoresAtBoundary() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-expired"))
+    try store.claim(testLease(expiresAtUnix: 1_800_000_100, heartbeatAtUnix: 1_800_000_090, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_100, currentParentPID: 100)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: true, reason: .expiredLease), "expired lease should restore at now >= expiresAtUnix")
+}
+
+func testRecoveryDecisionExpiredLeaseTrumpsMissedHeartbeat() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-expired-over-heartbeat"))
+    try store.claim(testLease(expiresAtUnix: 1_800_000_100, heartbeatAtUnix: 1_800_000_000, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_100, currentParentPID: 100)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: true, reason: .expiredLease), "expired lease should trump missed heartbeat")
+}
+
+func testRecoveryDecisionParentPIDChangeRestores() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-parent-changed"))
+    try store.claim(testLease(expiresAtUnix: 1_800_000_100, heartbeatAtUnix: 1_800_000_000, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_014, currentParentPID: 200)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: true, reason: .parentExited), "parent PID change should restore")
+}
+
+func testRecoveryDecisionMissedHeartbeatTrumpsParentPIDChange() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-heartbeat-over-parent"))
+    try store.claim(testLease(expiresAtUnix: 1_800_000_100, heartbeatAtUnix: 1_800_000_000, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_016, currentParentPID: 200)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: true, reason: .missedHeartbeat), "missed heartbeat should trump parent PID change")
+}
+
+func testRecoveryDecisionCapabilityMismatchRestoresBeforeOtherReasons() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-capability-mismatch"))
+    try store.claim(testLease(capabilityFingerprint: "old-fingerprint", expiresAtUnix: 1_800_000_000, heartbeatAtUnix: 1_799_999_000, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_100, currentParentPID: 200)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: true, reason: .capabilityMismatch), "capability mismatch should trump expiry, heartbeat, and parent checks")
+}
+
+func testRecoveryDecisionNilCurrentParentPIDSkipsParentCheck() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-parent-nil"))
+    try store.claim(testLease(expiresAtUnix: 1_800_000_100, heartbeatAtUnix: 1_800_000_000, parentPID: 100))
+    let controller = leaseDecisionController(store: store)
+
+    let decision = try controller.recoveryDecision(nowUnix: 1_800_000_014, currentParentPID: nil)
+
+    try expect(decision == FanRecoveryDecision(shouldRestore: false, reason: .activeLease), "nil current parent PID should skip parent restore")
+}
+
+func testLeaseClearRemovesLease() throws {
+    let store = FanLeaseStore(directory: temporaryDirectory("lease-clear"))
+    try store.claim(testLease())
+
+    try store.clear()
+
+    try expect(try store.readIfPresent() == nil, "clear should remove current lease")
+}
+
 func testAuditEventRecordsWriteDetails() throws {
     let logger = InMemoryFanControlLogger()
     let oldBytes = [UInt8](arrayLiteral: 0)
@@ -791,6 +919,51 @@ func fullyValidatedCapability() -> FanCapability {
     FanCapability.mac165ValidatedOneShot.withValidation(validationState())
 }
 
+func testLease(
+    id: UUID = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
+    capabilityFingerprint: String = fullyValidatedCapability().fingerprint,
+    ownerPID: Int32 = 42,
+    createdAtUnix: TimeInterval = 1_800_000_000,
+    expiresAtUnix: TimeInterval = 1_800_000_600,
+    heartbeatAtUnix: TimeInterval = 1_800_000_000,
+    parentPID: Int32 = 100,
+    phase: FanLeasePhase = .created,
+    capturedFans: [CapturedFanState] = [
+        CapturedFanState(index: 0, modeRaw: [3], targetRaw: FanEncoding.float32LittleEndian(2_000))
+    ],
+    reason: String = "test lease"
+) -> FanLease {
+    FanLease(
+        id: id,
+        capabilityFingerprint: capabilityFingerprint,
+        ownerPID: ownerPID,
+        parentPID: parentPID,
+        createdAtUnix: createdAtUnix,
+        expiresAtUnix: expiresAtUnix,
+        heartbeatAtUnix: heartbeatAtUnix,
+        phase: phase,
+        capturedFans: capturedFans,
+        reason: reason
+    )
+}
+
+func temporaryDirectory(_ name: String) -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-chill-fan-control-tests", isDirectory: true)
+        .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.removeItem(at: root)
+    return root
+}
+
+func leaseDecisionController(store: FanLeaseStore) -> FanController {
+    FanController(
+        hardware: FakeSMC.mac165(),
+        capability: fullyValidatedCapability(),
+        clock: TestClock(nowUnix: 1_800_000_000),
+        leaseStore: store
+    )
+}
+
 func validationState(
     read: Bool = true,
     boostMaxOneShot: Bool = true,
@@ -871,6 +1044,18 @@ let tests: [(String, () throws -> Void)] = [
     ("Status rejects wrong RPlt type", testStatusRejectsWrongPlatformType),
     ("Status rejects RPlt size mismatch", testStatusRejectsPlatformSizeMismatch),
     ("Status reports fan min/max out of bounds", testStatusReportsFanMinMaxOutOfBounds),
+    ("Lease round-trips captured pre-boost bytes and heartbeat updates", testLeaseRoundTripsCapturedPreBoostBytesAndHeartbeatUpdates),
+    ("Duplicate lease claim fails", testDuplicateLeaseClaimFails),
+    ("Recovery decision no lease", testRecoveryDecisionNoLease),
+    ("Recovery decision active lease", testRecoveryDecisionActiveLease),
+    ("Recovery decision missed heartbeat restores", testRecoveryDecisionMissedHeartbeatRestores),
+    ("Recovery decision expired lease restores at boundary", testRecoveryDecisionExpiredLeaseRestoresAtBoundary),
+    ("Recovery decision expired lease trumps missed heartbeat", testRecoveryDecisionExpiredLeaseTrumpsMissedHeartbeat),
+    ("Recovery decision parent PID change restores", testRecoveryDecisionParentPIDChangeRestores),
+    ("Recovery decision missed heartbeat trumps parent PID change", testRecoveryDecisionMissedHeartbeatTrumpsParentPIDChange),
+    ("Recovery decision capability mismatch restores before other reasons", testRecoveryDecisionCapabilityMismatchRestoresBeforeOtherReasons),
+    ("Recovery decision nil current parent PID skips parent check", testRecoveryDecisionNilCurrentParentPIDSkipsParentCheck),
+    ("Lease clear removes lease", testLeaseClearRemovesLease),
     ("Audit event records write details", testAuditEventRecordsWriteDetails),
     ("JSONL audit logger encodes Task 5 field names", testJSONLAuditLoggerEncodesTask5FieldNames),
     ("JSONL audit logger encodes nil leaseID as null", testJSONLAuditLoggerEncodesNilLeaseIDAsNull),

@@ -5,18 +5,21 @@ package final class FanController {
     private let capability: FanCapability
     private let clock: FanControlClock
     private let logger: FanControlLogger
+    private let leaseStore: FanLeaseStore
 
     package init(
         hardware: FanHardware,
         capability: FanCapability,
         clock: FanControlClock = SystemFanControlClock(),
         // Active write construction must inject a durable logger; this default is for read/status paths and tests.
-        logger: FanControlLogger = InMemoryFanControlLogger()
+        logger: FanControlLogger = InMemoryFanControlLogger(),
+        leaseStore: FanLeaseStore = .defaultStore()
     ) {
         self.hardware = hardware
         self.capability = capability
         self.clock = clock
         self.logger = logger
+        self.leaseStore = leaseStore
     }
 
     package func status() throws -> FanControlStatus {
@@ -52,6 +55,31 @@ package final class FanController {
                 unlockStatusUnavailable: unlockStatusUnavailable
             )
         )
+    }
+
+    package func recoveryDecision(nowUnix: TimeInterval? = nil, currentParentPID: Int32? = nil) throws -> FanRecoveryDecision {
+        guard let lease = try leaseStore.readIfPresent() else {
+            return FanRecoveryDecision(shouldRestore: false, reason: .noLease)
+        }
+
+        if lease.capabilityFingerprint != capability.fingerprint {
+            return FanRecoveryDecision(shouldRestore: true, reason: .capabilityMismatch)
+        }
+
+        let observedNow = nowUnix ?? clock.nowUnix
+        if observedNow >= lease.expiresAtUnix {
+            return FanRecoveryDecision(shouldRestore: true, reason: .expiredLease)
+        }
+
+        if observedNow - lease.heartbeatAtUnix >= TimeInterval(capability.missedHeartbeatRestoreSeconds) {
+            return FanRecoveryDecision(shouldRestore: true, reason: .missedHeartbeat)
+        }
+
+        if let currentParentPID, currentParentPID != lease.parentPID {
+            return FanRecoveryDecision(shouldRestore: true, reason: .parentExited)
+        }
+
+        return FanRecoveryDecision(shouldRestore: false, reason: .activeLease)
     }
 
     private func availability(fanCount: Int, platform: String, fans: [FanStatus], unlockStatusUnavailable: Bool) -> ActiveAvailability {

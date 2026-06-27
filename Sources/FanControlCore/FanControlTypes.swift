@@ -155,6 +155,25 @@ public struct FanControlStatus: Equatable, Sendable {
     }
 }
 
+public enum FanRecoveryReason: Equatable, Sendable {
+    case noLease
+    case activeLease
+    case missedHeartbeat
+    case expiredLease
+    case parentExited
+    case capabilityMismatch
+}
+
+public struct FanRecoveryDecision: Equatable, Sendable {
+    public let shouldRestore: Bool
+    public let reason: FanRecoveryReason
+
+    public init(shouldRestore: Bool, reason: FanRecoveryReason) {
+        self.shouldRestore = shouldRestore
+        self.reason = reason
+    }
+}
+
 public protocol FanControlClock {
     var nowUnix: TimeInterval { get }
     func sleep(seconds: Double)
