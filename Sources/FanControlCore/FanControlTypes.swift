@@ -88,6 +88,18 @@ public struct FanWriteResult: Equatable, Sendable {
     }
 }
 
+public struct FanBoostResult: Equatable, Sendable {
+    public let leaseID: UUID
+    public let verified: Bool
+    public let maxActualRPM: Float
+
+    public init(leaseID: UUID, verified: Bool, maxActualRPM: Float) {
+        self.leaseID = leaseID
+        self.verified = verified
+        self.maxActualRPM = maxActualRPM
+    }
+}
+
 public enum FanEncoding {
     public static func float32LittleEndian(_ value: Float) -> [UInt8] {
         var raw = value.bitPattern.littleEndian

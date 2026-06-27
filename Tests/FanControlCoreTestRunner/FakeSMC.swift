@@ -19,6 +19,7 @@ final class FakeSMC: FanHardware {
 
     let serviceName = "FakeSMC"
     private(set) var writes: [WriteEvent] = []
+    var onBeforeWrite: ((FanWriteOperation, String) -> Void)?
     private var entries: [String: Entry]
     private var tick = 0
     private var pending: [(applyAt: Int, key: String, bytes: [UInt8], releaseSettledFan: Int?)] = []
@@ -111,6 +112,7 @@ final class FakeSMC: FanHardware {
         guard entries[key.stringValue] != nil else {
             throw FanControlError.missingKey(key.stringValue)
         }
+        onBeforeWrite?(operation, key.stringValue)
 
         if let rejection = scriptedRejections.first(where: { $0.operation == operation && $0.key == key.stringValue }) {
             return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.smcResult)

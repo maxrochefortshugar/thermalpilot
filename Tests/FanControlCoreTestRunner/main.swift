@@ -1025,6 +1025,94 @@ func testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets() throws {
     try expect(try smc.read(try FanKey("F1Tg")).bytes == fan1Target, "raw helper should mutate readable F1Tg entry")
 }
 
+func testBoostCreatesLeaseBeforeFirstWrite() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-lease-before-write"))
+    var leasePresentBeforeFirstWrite: Bool?
+    smc.onBeforeWrite = { _, _ in
+        if leasePresentBeforeFirstWrite == nil {
+            leasePresentBeforeFirstWrite = ((try? store.readIfPresent()) != nil)
+        }
+    }
+    let controller = boostController(smc: smc, store: store)
+
+    _ = try controller.boostMax(leaseSeconds: 60, reason: "test boost")
+
+    try expect(leasePresentBeforeFirstWrite == true, "boost should claim lease before first hardware write")
+    let lease = try store.readIfPresent()
+    try expect(lease != nil, "boost should leave active lease for Task 8 restore")
+    try expect(lease?.capturedFans.count == 2, "boost lease should capture every fan")
+    try expect(lease?.capturedFans[0].modeRaw == [3], "boost lease should capture pre-boost mode bytes")
+    try expect(lease?.capturedFans[0].targetRaw == FanEncoding.float32LittleEndian(0), "boost lease should capture pre-boost target bytes")
+    try expect(lease?.ownerStartTimeUnix == 1_700_000_000, "boost lease should capture owner process start time when inspectable")
+}
+
+func testBoostRestoresOnWriteFailureAfterLeaseCreation() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-rollback-after-write-failure"))
+    smc.rejectWrite(operation: .mode(fan: 1, value: 1), key: "F1Md", smcResult: 0x84)
+    let controller = boostController(smc: smc, store: store)
+
+    try expectThrows("boost should throw original write rejection", {
+        _ = try controller.boostMax(leaseSeconds: 60, reason: "test boost failure")
+    }, matching: { error in
+        error as? FanControlError == .writeRejected(key: "F1Md", smcResult: 0x84)
+    })
+
+    try expect(smc.writes.contains { $0.operation == .unlock(value: 0) }, "boost failure should restore Ftst")
+    try expect(smc.writes.contains { $0.operation == .mode(fan: 0, value: 0) }, "boost failure should release fan 0")
+    try expect(smc.writes.contains { $0.operation == .mode(fan: 1, value: 0) }, "boost failure should release fan 1")
+    try expect(try store.readIfPresent() != nil, "failed boost should leave lease for recovery rather than silently clearing it")
+}
+
+func testBoostUsesHardwareValidatedSequence() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-validated-sequence"))
+    let clock = TestClock(onSleep: { smc.advanceTick() })
+    let logger = InMemoryFanControlLogger()
+    let controller = boostController(smc: smc, store: store, clock: clock, logger: logger)
+
+    let result = try controller.boostMax(leaseSeconds: 60, reason: "test sequence")
+    let lease = try store.read()
+
+    try expect(result.leaseID == lease.id, "boost result should identify active lease")
+    try expect(result.verified, "boost should report verified ramp")
+    try expect(result.maxActualRPM >= 5_777 * activeTestCapability().boostVerificationMultiplier, "boost should observe actual RPM above verification threshold")
+
+    let expectedPrefix: [FanWriteOperation] = [
+        .unlock(value: activeTestCapability().unlockOn),
+        .target(fan: 0, bytes: FanEncoding.float32LittleEndian(5_777)),
+        .target(fan: 1, bytes: FanEncoding.float32LittleEndian(5_777)),
+        .mode(fan: 0, value: activeTestCapability().manualCommand),
+        .mode(fan: 1, value: activeTestCapability().manualCommand),
+        .target(fan: 0, bytes: FanEncoding.float32LittleEndian(5_777)),
+        .target(fan: 1, bytes: FanEncoding.float32LittleEndian(5_777))
+    ]
+    try expect(Array(smc.writes.prefix(expectedPrefix.count)).map(\.operation) == expectedPrefix, "boost should use validated unlock/target/manual/max sequence")
+    try expect(try smc.read(try FanKey("Ftst")).bytes == [activeTestCapability().unlockOn], "boost should poll until unlock reads back on")
+    try expect(try smc.read(try FanKey("F0Md")).bytes == [activeTestCapability().manualCommand], "boost should poll fan 0 manual readback")
+    try expect(try smc.read(try FanKey("F1Md")).bytes == [activeTestCapability().manualCommand], "boost should poll fan 1 manual readback")
+    try expect(try smc.read(try FanKey("F0Tg")).bytes == FanEncoding.float32LittleEndian(5_777), "boost should confirm fan 0 max target after manual")
+    try expect(try smc.read(try FanKey("F1Tg")).bytes == FanEncoding.float32LittleEndian(5_777), "boost should confirm fan 1 max target after manual")
+    try expect(logger.events.map(\.key) == smc.writes.map(\.key), "boost should audit every hardware write")
+    try expect(logger.events.allSatisfy { $0.leaseID == lease.id }, "boost write audit events should include the lease id")
+}
+
+func testBoostRefusesWhenActiveControlDisabled() throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-active-control-disabled"))
+    let controller = boostController(smc: smc, store: store, capability: .mac165ValidatedOneShot)
+
+    try expectThrows("boost should refuse disabled active control", {
+        _ = try controller.boostMax(leaseSeconds: 60, reason: "disabled boost")
+    }, matching: { error in
+        error as? FanControlError == .activeControlDisabled(model: "Mac16,5")
+    })
+
+    try expect(smc.writes.isEmpty, "disabled boost should not write hardware")
+    try expect(try store.readIfPresent() == nil, "disabled boost should not claim a lease")
+}
+
 func settleManualMode(_ smc: FakeSMC, fan: Int) throws {
     let capability = FanCapability.mac165ValidatedOneShot
     _ = try smc.write(.unlock(value: capability.unlockOn), capability: capability, reason: "unlock")
@@ -1047,6 +1135,10 @@ func settleManualMode(_ smc: FakeSMC, fan: Int) throws {
 
 func fullyValidatedCapability() -> FanCapability {
     FanCapability.mac165ValidatedOneShot.withValidation(validationState())
+}
+
+func activeTestCapability() -> FanCapability {
+    fullyValidatedCapability()
 }
 
 func testLease(
@@ -1104,6 +1196,26 @@ func leaseDecisionController(store: FanLeaseStore, processInspector: any FanProc
         clock: TestClock(nowUnix: 1_800_000_000),
         leaseStore: store,
         processInspector: processInspector
+    )
+}
+
+func boostController(
+    smc: FakeSMC,
+    store: FanLeaseStore,
+    capability: FanCapability = activeTestCapability(),
+    clock: FanControlClock? = nil,
+    logger: InMemoryFanControlLogger = InMemoryFanControlLogger()
+) -> FanController {
+    let ownerPID = Int32(ProcessInfo.processInfo.processIdentifier)
+    return FanController(
+        hardware: smc,
+        capability: capability,
+        clock: clock ?? TestClock(onSleep: { smc.advanceTick() }),
+        logger: logger,
+        leaseStore: store,
+        processInspector: TestProcessInspector(ownerProcesses: [
+            ownerPID: FanOwnerProcessInfo(pid: ownerPID, parentPID: 100, startTimeUnix: 1_700_000_000)
+        ])
     )
 }
 
@@ -1230,7 +1342,11 @@ let tests: [(String, () throws -> Void)] = [
     ("FakeSMC rejects manual non-finite target write", testFakeSMCRejectsManualNonFiniteTargetWrite),
     ("FakeSMC post-manual target write sticks", testFakeSMCPostManualTargetWriteSticks),
     ("FakeSMC scripted mode write rejection", testFakeSMCScriptedModeWriteRejection),
-    ("FakeSMC raw entry bytes helper mutates and reads targets", testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets)
+    ("FakeSMC raw entry bytes helper mutates and reads targets", testFakeSMCRawEntryBytesHelperMutatesAndReadsTargets),
+    ("Boost creates lease before first write", testBoostCreatesLeaseBeforeFirstWrite),
+    ("Boost restores on write failure after lease creation", testBoostRestoresOnWriteFailureAfterLeaseCreation),
+    ("Boost uses hardware validated sequence", testBoostUsesHardwareValidatedSequence),
+    ("Boost refuses when active control disabled", testBoostRefusesWhenActiveControlDisabled)
 ]
 
 var failures = 0
