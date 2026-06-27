@@ -215,13 +215,15 @@ func testFakeSMCRejectsUnsafePreManualTargetRequests() throws {
     let unsafeTargets: [(String, [UInt8])] = [
         ("zero", FanEncoding.float32LittleEndian(0)),
         ("nan", FanEncoding.float32LittleEndian(.nan)),
+        ("malformed", [0x00, 0x01]),
         ("below safe floor", FanEncoding.float32LittleEndian(minimum * 0.94))
     ]
 
     for (label, bytes) in unsafeTargets {
         let smc = FakeSMC.mac165()
 
-        _ = try smc.write(.target(fan: 0, bytes: bytes), capability: .mac165ValidatedOneShot, reason: "unsafe pre-manual \(label)")
+        let result = try smc.write(.target(fan: 0, bytes: bytes), capability: .mac165ValidatedOneShot, reason: "unsafe pre-manual \(label)")
+        try expect(result.smcResult != 0, "unsafe pre-manual \(label) target write should be rejected")
         smc.advanceTick()
         smc.advanceTick()
 

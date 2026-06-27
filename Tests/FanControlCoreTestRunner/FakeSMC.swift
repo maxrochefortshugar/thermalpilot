@@ -135,8 +135,9 @@ final class FakeSMC: FanHardware {
             guard entries["F\(fan)Md"]?.bytes == [capability.manualCommand] else {
                 if validPreManualTargetRequest(bytes, fan: fan, capability: capability) {
                     pending.append((applyAt: tick + 2, key: key.stringValue, bytes: preManualTargetGuardBytes(fan: fan, capability: capability)))
+                    return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
                 }
-                return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
+                return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
             }
 
             guard validManualTarget(bytes, fan: fan) else {
