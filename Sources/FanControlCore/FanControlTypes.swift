@@ -158,6 +158,7 @@ public struct FanControlStatus: Equatable, Sendable {
 public enum FanRecoveryReason: Equatable, Sendable {
     case noLease
     case activeLease
+    case corruptLease
     case missedHeartbeat
     case expiredLease
     case parentExited
@@ -172,6 +173,22 @@ public struct FanRecoveryDecision: Equatable, Sendable {
         self.shouldRestore = shouldRestore
         self.reason = reason
     }
+}
+
+public struct FanOwnerProcessInfo: Equatable, Sendable {
+    public let pid: Int32
+    public let parentPID: Int32?
+    public let startTimeUnix: TimeInterval?
+
+    public init(pid: Int32, parentPID: Int32?, startTimeUnix: TimeInterval?) {
+        self.pid = pid
+        self.parentPID = parentPID
+        self.startTimeUnix = startTimeUnix
+    }
+}
+
+public protocol FanProcessInspecting {
+    func ownerProcessInfo(pid: Int32) -> FanOwnerProcessInfo?
 }
 
 public protocol FanControlClock {

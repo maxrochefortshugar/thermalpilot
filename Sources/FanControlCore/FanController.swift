@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 package final class FanController {
     private let hardware: FanHardware
@@ -6,6 +9,7 @@ package final class FanController {
     private let clock: FanControlClock
     private let logger: FanControlLogger
     private let leaseStore: FanLeaseStore
+    private let processInspector: any FanProcessInspecting
 
     package init(
         hardware: FanHardware,
@@ -13,13 +17,15 @@ package final class FanController {
         clock: FanControlClock = SystemFanControlClock(),
         // Active write construction must inject a durable logger; this default is for read/status paths and tests.
         logger: FanControlLogger = InMemoryFanControlLogger(),
-        leaseStore: FanLeaseStore = .defaultStore()
+        leaseStore: FanLeaseStore = .defaultStore(),
+        processInspector: any FanProcessInspecting = SystemFanProcessInspector()
     ) {
         self.hardware = hardware
         self.capability = capability
         self.clock = clock
         self.logger = logger
         self.leaseStore = leaseStore
+        self.processInspector = processInspector
     }
 
     package func status() throws -> FanControlStatus {
@@ -58,8 +64,14 @@ package final class FanController {
     }
 
     package func recoveryDecision(nowUnix: TimeInterval? = nil, currentParentPID: Int32? = nil) throws -> FanRecoveryDecision {
-        guard let lease = try leaseStore.readIfPresent() else {
-            return FanRecoveryDecision(shouldRestore: false, reason: .noLease)
+        let lease: FanLease
+        do {
+            guard let currentLease = try leaseStore.readIfPresent() else {
+                return FanRecoveryDecision(shouldRestore: false, reason: .noLease)
+            }
+            lease = currentLease
+        } catch FanLeaseStoreError.corruptLease, FanLeaseStoreError.unreadableLease {
+            return FanRecoveryDecision(shouldRestore: true, reason: .corruptLease)
         }
 
         if lease.capabilityFingerprint != capability.fingerprint {
@@ -77,6 +89,23 @@ package final class FanController {
 
         if let currentParentPID, currentParentPID != lease.parentPID {
             return FanRecoveryDecision(shouldRestore: true, reason: .parentExited)
+        }
+        if currentParentPID == nil {
+            guard let ownerProcessInfo = processInspector.ownerProcessInfo(pid: lease.ownerPID),
+                  let observedParentPID = ownerProcessInfo.parentPID
+            else {
+                return FanRecoveryDecision(shouldRestore: true, reason: .parentExited)
+            }
+            if observedParentPID != lease.parentPID {
+                return FanRecoveryDecision(shouldRestore: true, reason: .parentExited)
+            }
+            if let expectedStartTime = lease.ownerStartTimeUnix {
+                guard let observedStartTime = ownerProcessInfo.startTimeUnix,
+                      observedStartTime == expectedStartTime
+                else {
+                    return FanRecoveryDecision(shouldRestore: true, reason: .parentExited)
+                }
+            }
         }
 
         return FanRecoveryDecision(shouldRestore: false, reason: .activeLease)
@@ -167,5 +196,23 @@ package final class FanController {
             throw FanControlError.invalidReading(key: key.stringValue, reason: "expected ch8* ASCII bytes")
         }
         return value
+    }
+}
+
+public struct SystemFanProcessInspector: FanProcessInspecting {
+    public init() {}
+
+    public func ownerProcessInfo(pid: Int32) -> FanOwnerProcessInfo? {
+        #if canImport(Darwin)
+        var processInfo = proc_bsdinfo()
+        let byteCount = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &processInfo, Int32(MemoryLayout<proc_bsdinfo>.size))
+        guard byteCount == Int32(MemoryLayout<proc_bsdinfo>.size) else {
+            return nil
+        }
+        let startTime = TimeInterval(processInfo.pbi_start_tvsec) + TimeInterval(processInfo.pbi_start_tvusec) / 1_000_000
+        return FanOwnerProcessInfo(pid: pid, parentPID: Int32(processInfo.pbi_ppid), startTimeUnix: startTime)
+        #else
+        return nil
+        #endif
     }
 }

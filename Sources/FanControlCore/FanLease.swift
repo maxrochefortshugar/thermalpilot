@@ -15,6 +15,18 @@ public enum FanLeasePhase: String, Codable, Equatable, Sendable {
 
 public enum FanLeaseStoreError: Error, Equatable, Sendable {
     case leaseAlreadyExists
+    case leaseMissing
+    case leaseIdentityMismatch
+    case corruptLease
+    case unreadableLease
+}
+
+package struct FanLeaseStorePersistenceHooks {
+    package let failBeforeClaimPublish: (any Error)?
+
+    package init(failBeforeClaimPublish: (any Error)? = nil) {
+        self.failBeforeClaimPublish = failBeforeClaimPublish
+    }
 }
 
 public struct CapturedFanState: Codable, Equatable, Sendable {
@@ -33,6 +45,7 @@ public struct FanLease: Codable, Equatable, Sendable {
     public let id: UUID
     public let capabilityFingerprint: String
     public let ownerPID: Int32
+    public let ownerStartTimeUnix: TimeInterval?
     public let parentPID: Int32
     public let createdAtUnix: TimeInterval
     public let expiresAtUnix: TimeInterval
@@ -45,6 +58,7 @@ public struct FanLease: Codable, Equatable, Sendable {
         id: UUID,
         capabilityFingerprint: String,
         ownerPID: Int32,
+        ownerStartTimeUnix: TimeInterval? = nil,
         parentPID: Int32,
         createdAtUnix: TimeInterval,
         expiresAtUnix: TimeInterval,
@@ -56,6 +70,7 @@ public struct FanLease: Codable, Equatable, Sendable {
         self.id = id
         self.capabilityFingerprint = capabilityFingerprint
         self.ownerPID = ownerPID
+        self.ownerStartTimeUnix = ownerStartTimeUnix
         self.parentPID = parentPID
         self.createdAtUnix = createdAtUnix
         self.expiresAtUnix = expiresAtUnix
@@ -70,6 +85,7 @@ public struct FanLease: Codable, Equatable, Sendable {
             id: id,
             capabilityFingerprint: capabilityFingerprint,
             ownerPID: ownerPID,
+            ownerStartTimeUnix: ownerStartTimeUnix,
             parentPID: parentPID,
             createdAtUnix: createdAtUnix,
             expiresAtUnix: expiresAtUnix,
@@ -83,12 +99,22 @@ public struct FanLease: Codable, Equatable, Sendable {
 
 public struct FanLeaseStore {
     private let directory: URL
+    private let persistenceHooks: FanLeaseStorePersistenceHooks
     private var leaseURL: URL {
         directory.appendingPathComponent("current-lease.json", isDirectory: false)
+    }
+    private var lockURL: URL {
+        directory.appendingPathComponent(".current-lease.lock", isDirectory: false)
     }
 
     public init(directory: URL) {
         self.directory = directory
+        self.persistenceHooks = FanLeaseStorePersistenceHooks()
+    }
+
+    package init(directory: URL, persistenceHooks: FanLeaseStorePersistenceHooks) {
+        self.directory = directory
+        self.persistenceHooks = persistenceHooks
     }
 
     public static func defaultStore() -> FanLeaseStore {
@@ -101,38 +127,61 @@ public struct FanLeaseStore {
         let data = try encode(lease)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let fd = open(leaseURL.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-        if fd < 0 {
-            if errno == EEXIST {
-                throw FanLeaseStoreError.leaseAlreadyExists
+        try withMutationLock {
+            let temporaryURL = try writeDurableTemporaryLease(data)
+            var published = false
+            defer {
+                if !published {
+                    _ = unlink(temporaryURL.path)
+                }
             }
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
 
-        do {
-            try writeAll(data, to: fd)
-            guard fsync(fd) == 0 else {
+            if let failure = persistenceHooks.failBeforeClaimPublish {
+                throw failure
+            }
+
+            if link(temporaryURL.path, leaseURL.path) != 0 {
+                let capturedErrno = errno
+                if capturedErrno == EEXIST {
+                    throw FanLeaseStoreError.leaseAlreadyExists
+                }
+                throw POSIXError(POSIXErrorCode(rawValue: capturedErrno) ?? .EIO)
+            }
+            published = true
+            try fsyncDirectory()
+
+            if unlink(temporaryURL.path) != 0 {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-        } catch {
-            _ = close(fd)
-            _ = unlink(leaseURL.path)
-            throw error
-        }
-
-        guard close(fd) == 0 else {
-            _ = unlink(leaseURL.path)
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            try fsyncDirectory()
         }
     }
 
-    public func overwriteForRecovery(_ lease: FanLease) throws {
+    public func overwriteForRecovery(_ lease: FanLease, replacingLeaseID expectedLeaseID: UUID) throws {
         let data = try encode(lease)
-        try replaceCurrentLease(with: data)
+        try withMutationLock {
+            let current = try readExistingLease()
+            guard current.id == expectedLeaseID else {
+                throw FanLeaseStoreError.leaseIdentityMismatch
+            }
+            try replaceCurrentLease(with: data)
+        }
     }
 
     public func read() throws -> FanLease {
-        try decode(Data(contentsOf: leaseURL))
+        guard FileManager.default.fileExists(atPath: leaseURL.path) else {
+            throw FanLeaseStoreError.leaseMissing
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: leaseURL)
+        } catch {
+            if FileManager.default.fileExists(atPath: leaseURL.path) {
+                throw FanLeaseStoreError.unreadableLease
+            }
+            throw FanLeaseStoreError.leaseMissing
+        }
+        return try decode(data)
     }
 
     public func readIfPresent() throws -> FanLease? {
@@ -140,18 +189,47 @@ public struct FanLeaseStore {
         return try read()
     }
 
-    public func heartbeat(nowUnix: TimeInterval) throws {
-        let lease = try read().withHeartbeat(nowUnix: nowUnix)
-        try overwriteForRecovery(lease)
+    public func heartbeat(leaseID: UUID, nowUnix: TimeInterval) throws {
+        try withMutationLock {
+            let current = try readExistingLease()
+            guard current.id == leaseID else {
+                throw FanLeaseStoreError.leaseIdentityMismatch
+            }
+            let lease = current.withHeartbeat(nowUnix: nowUnix)
+            try replaceCurrentLease(with: try encode(lease))
+        }
     }
 
-    public func clear() throws {
-        guard FileManager.default.fileExists(atPath: leaseURL.path) else { return }
-        try FileManager.default.removeItem(at: leaseURL)
+    public func clear(leaseID: UUID) throws {
+        try withMutationLock {
+            let current = try readExistingLease()
+            guard current.id == leaseID else {
+                throw FanLeaseStoreError.leaseIdentityMismatch
+            }
+            if unlink(leaseURL.path) != 0 {
+                let capturedErrno = errno
+                if capturedErrno == ENOENT {
+                    throw FanLeaseStoreError.leaseMissing
+                }
+                throw POSIXError(POSIXErrorCode(rawValue: capturedErrno) ?? .EIO)
+            }
+            try fsyncDirectory()
+        }
     }
 
     private func replaceCurrentLease(with data: Data) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let temporaryURL = try writeDurableTemporaryLease(data)
+
+        if rename(temporaryURL.path, leaseURL.path) != 0 {
+            let capturedErrno = errno
+            _ = unlink(temporaryURL.path)
+            throw POSIXError(POSIXErrorCode(rawValue: capturedErrno) ?? .EIO)
+        }
+        try fsyncDirectory()
+    }
+
+    private func writeDurableTemporaryLease(_ data: Data) throws -> URL {
         let temporaryURL = directory.appendingPathComponent(".current-lease-\(UUID().uuidString).tmp", isDirectory: false)
         let fd = open(temporaryURL.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard fd >= 0 else {
@@ -174,11 +252,7 @@ public struct FanLeaseStore {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
 
-        if rename(temporaryURL.path, leaseURL.path) != 0 {
-            let capturedErrno = errno
-            _ = unlink(temporaryURL.path)
-            throw POSIXError(POSIXErrorCode(rawValue: capturedErrno) ?? .EIO)
-        }
+        return temporaryURL
     }
 
     private func encode(_ lease: FanLease) throws -> Data {
@@ -188,7 +262,11 @@ public struct FanLeaseStore {
     }
 
     private func decode(_ data: Data) throws -> FanLease {
-        try JSONDecoder().decode(FanLease.self, from: data)
+        do {
+            return try JSONDecoder().decode(FanLease.self, from: data)
+        } catch {
+            throw FanLeaseStoreError.corruptLease
+        }
     }
 
     private func writeAll(_ data: Data, to fd: Int32) throws {
@@ -206,6 +284,41 @@ public struct FanLeaseStore {
                 pointer = pointer.advanced(by: written)
                 remaining -= written
             }
+        }
+    }
+
+    private func readExistingLease() throws -> FanLease {
+        guard let lease = try readIfPresent() else {
+            throw FanLeaseStoreError.leaseMissing
+        }
+        return lease
+    }
+
+    private func withMutationLock<T>(_ body: () throws -> T) throws -> T {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fd = open(lockURL.path, O_RDWR | O_CREAT, 0o600)
+        guard fd >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { _ = close(fd) }
+
+        guard flock(fd, LOCK_EX) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { _ = flock(fd, LOCK_UN) }
+
+        return try body()
+    }
+
+    private func fsyncDirectory() throws {
+        let fd = open(directory.path, O_RDONLY)
+        guard fd >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { _ = close(fd) }
+
+        guard fsync(fd) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 }
