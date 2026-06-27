@@ -3,12 +3,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "mlx-chill",
+    name: "coldfront",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "mlx-chill", targets: ["mlx-chill"]),
+        .executable(name: "coldfront", targets: ["coldfront"]),
         .library(name: "FanProbeCore", targets: ["FanProbeCore"])
     ],
     targets: [
@@ -23,14 +23,29 @@ let package = Package(
             name: "FanProbeCore",
             dependencies: ["CSMC"]
         ),
+        .target(
+            name: "FanControlCore"
+        ),
+        .target(
+            name: "SMCControlTransport",
+            dependencies: ["FanControlCore"],
+            linkerSettings: [
+                .linkedFramework("IOKit")
+            ]
+        ),
         .executableTarget(
-            name: "mlx-chill",
-            dependencies: ["FanProbeCore"]
+            name: "coldfront",
+            dependencies: ["FanProbeCore", "FanControlCore", "SMCControlTransport"]
         ),
         .executableTarget(
             name: "FanProbeCoreTestRunner",
             dependencies: ["FanProbeCore"],
             path: "Tests/FanProbeCoreTestRunner"
+        ),
+        .executableTarget(
+            name: "FanControlCoreTestRunner",
+            dependencies: ["FanControlCore", "SMCControlTransport"],
+            path: "Tests/FanControlCoreTestRunner"
         )
     ]
 )

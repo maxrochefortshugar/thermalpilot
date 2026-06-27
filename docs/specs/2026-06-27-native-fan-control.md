@@ -5,12 +5,12 @@ Date: 2026-06-27
 
 ## Goal
 
-Build a native MLX & Chill fan-control module for Apple Silicon Macs.
+Build a native Coldfront fan-control module for Apple Silicon Macs.
 
 Initial active mode is deliberately simple:
 
 ```text
-boost max -> run workload -> restore auto
+boost -> run workload -> restore auto
 ```
 
 No prediction, no fan curves, and no dependency on ThermalForge, TG Pro, Macs
@@ -22,12 +22,12 @@ allowlisted by Mac model.
 ## Prior Art And License
 
 ThermalForge and MTPLX already implement useful Apple Silicon fan-control and
-MLX-workload fan behavior:
+local-workload fan behavior:
 
 - ThermalForge: https://github.com/ProducerGuy/ThermalForge
 - MTPLX: https://github.com/youssofal/MTPLX
 
-MLX & Chill is Apache-2.0 licensed. ThermalForge is MIT licensed. MLX & Chill
+Coldfront is Apache-2.0 licensed. ThermalForge is MIT licensed. Coldfront
 may adapt small implementation details, but must preserve MIT attribution in
 any copied/adapted source:
 
@@ -40,7 +40,7 @@ Licensed under the MIT License.
 
 ## SMC Transport
 
-MLX & Chill talks to the AppleSMC user client through IOKit.
+Coldfront talks to the AppleSMC user client through IOKit.
 
 Known service names:
 
@@ -49,7 +49,7 @@ Known service names:
 | `AppleSMCKeysEndpoint` | Observed on local `Mac16,5` M4 Max. |
 | `AppleSMC` | Used by older AppleSMC tools and ThermalForge. |
 
-MLX & Chill should try both services and record which one opened.
+Coldfront should try both services and record which one opened.
 
 IOKit call shape:
 
@@ -85,7 +85,7 @@ All keys are four ASCII bytes.
 
 ### Legacy Key Not Required
 
-| Key | Meaning | MLX & Chill policy |
+| Key | Meaning | Coldfront policy |
 | --- | --- | --- |
 | `FS! ` | Legacy fan forced-mode bitmask. | Do not require. It is unavailable on local `Mac16,5`. |
 
@@ -97,7 +97,7 @@ until separately validated.
 Observed on `Mac16,5` / M4 Max / platform `j616c`:
 
 ```sh
-.build/release/mlx-chill FNum F0Ac F0Mn F0Mx F0Tg F1Ac F1Mn F1Mx F1Tg F0Md F1Md 'FS! ' Ftst RPlt
+.build/release/coldfront FNum F0Ac F0Mn F0Mx F0Tg F1Ac F1Mn F1Mx F1Tg F0Md F1Md 'FS! ' Ftst RPlt
 ```
 
 | Key | Value | Raw |
@@ -130,7 +130,7 @@ Interpretation for local M4:
 
 ## Hardware Validation Run
 
-Validated on local `Mac16,5` / M4 Max / `j616c` with a one-shot scratch probe.
+Validated on local `Mac16,5` / M4 Max / `j616c` with a short validation probe.
 
 Observed behavior:
 
@@ -221,7 +221,7 @@ For each allowlisted model:
 1. Read `FNum`; require `1...8`.
 2. Read every fan's `Ac`, `Mn`, `Mx`, `Tg`, and mode key.
 3. Save raw pre-boost mode and target bytes in the lease marker.
-4. Refuse to take over an already-manual fan unless an existing MLX & Chill
+4. Refuse to take over an already-manual fan unless an existing Coldfront
    lease owns it.
 5. Validate each `Mn > 0`, `Mx > Mn`, and `Mx <= 10000`.
 6. Create a lease marker on disk before writing.
@@ -280,7 +280,7 @@ Defaults:
 Restore auto on:
 
 - normal workload exit
-- explicit `mlx-chill auto`
+- explicit `coldfront auto`
 - Ctrl-C
 - SIGTERM
 - parent process death
@@ -373,13 +373,13 @@ Set `active_control.enabled: true` only after local hardware validation proves:
 Target commands:
 
 ```sh
-mlx-chill status --json
-mlx-chill boost max --for 10m
-mlx-chill auto
-mlx-chill run --boost max -- <workload command>
+coldfront status --json
+coldfront boost --for 10m
+coldfront auto
+coldfront run --boost -- <workload command>
 ```
 
-`mlx-chill run --boost max -- <workload>` flow:
+`coldfront run --boost -- <workload>` flow:
 
 1. Start helper lease.
 2. Verify fans ramp.
@@ -402,7 +402,7 @@ Required before enabling active writes:
 - Unit tests for stale marker recovery.
 - Integration tests against a fake SMC backend.
 - Static test that read-only target has no write API.
-- Manual hardware log for boost max.
+- Manual hardware log for boost.
 - Manual hardware log for restore auto.
 - Manual hardware log for crash recovery.
 - Manual hardware log for sleep/wake recovery.
