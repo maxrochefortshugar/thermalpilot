@@ -104,8 +104,14 @@ final class FakeSMC: FanHardware {
             return record(operation, key: key, bytes: bytes, reason: reason, result: rejection.smcResult)
         }
 
-        if case .mode(_, 1) = operation, entries["Ftst"]?.bytes != [1] {
-            return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+        if case .mode(_, let value) = operation {
+            if value == capability.manualCommand {
+                guard entries["Ftst"]?.bytes == [capability.unlockOn] else {
+                    return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+                }
+            } else if value != capability.releaseCommand {
+                return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+            }
         }
 
         if key.stringValue == "Ftst" {
@@ -123,8 +129,15 @@ final class FakeSMC: FanHardware {
             return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
         }
 
-        if case .target(let fan, _) = operation, entries["F\(fan)Md"]?.bytes != [1] {
-            return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
+        if case .target(let fan, _) = operation {
+            guard entries["F\(fan)Md"]?.bytes == [capability.manualCommand] else {
+                pending.append((applyAt: tick + 2, key: key.stringValue, bytes: preManualTargetGuardBytes(fan: fan, capability: capability)))
+                return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
+            }
+
+            guard validManualTarget(bytes, fan: fan) else {
+                return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+            }
         }
 
         entries[key.stringValue]?.bytes = bytes
@@ -134,6 +147,22 @@ final class FakeSMC: FanHardware {
     private func record(_ operation: FanWriteOperation, key: FanKey, bytes: [UInt8], reason: String, result: UInt8) -> FanWriteResult {
         writes.append(WriteEvent(operation: operation, key: key.stringValue, bytes: bytes, reason: reason, smcResult: result))
         return FanWriteResult(kernReturn: 0, smcResult: result, smcStatus: 0)
+    }
+
+    private func validManualTarget(_ bytes: [UInt8], fan: Int) -> Bool {
+        guard let target = FanEncoding.floatValue(bytes),
+              let minimum = FanEncoding.floatValue(entries["F\(fan)Mn"]?.bytes ?? []),
+              let maximum = FanEncoding.floatValue(entries["F\(fan)Mx"]?.bytes ?? [])
+        else { return false }
+        return target >= minimum && target <= maximum
+    }
+
+    private func preManualTargetGuardBytes(fan: Int, capability: FanCapability) -> [UInt8] {
+        let minimum = FanEncoding.floatValue(entries["F\(fan)Mn"]?.bytes ?? []) ?? 1
+        let maximum = FanEncoding.floatValue(entries["F\(fan)Mx"]?.bytes ?? []) ?? max(minimum + 1, 2)
+        let safeFloor = max(minimum * capability.preManualMinimumMultiplier, 1)
+        let safeTarget = min(safeFloor, maximum.nextDown)
+        return FanEncoding.float32LittleEndian(safeTarget)
     }
 
     private func simulateRamp() {
