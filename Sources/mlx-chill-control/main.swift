@@ -4,16 +4,19 @@ import FanControlCore
 do {
     let command = try FanControlCommand.parse(Array(CommandLine.arguments.dropFirst()))
     let capability = FanCapability.mac165ValidatedOneShot
-    let disabledMessage = "active fan control is disabled for Mac16,5"
 
     switch command {
     case .boostMax, .runBoostMax:
         guard capability.validation.activeControlEnabled else {
-            print(disabledMessage)
-            exit(0)
+            let response = try FanControlCommandContract.disabledActiveControlResponse(
+                for: command,
+                capability: capability
+            )
+            print(response.stdout, terminator: "")
+            exit(response.exitCode)
         }
 
-        print(disabledMessage)
+        print(FanControlCommandContract.disabledActiveControlMessage(model: capability.model))
 
     case .auto:
         let store = FanLeaseStore.defaultStore()
@@ -30,7 +33,12 @@ do {
         print("auto is recovery-only for compatible existing MLX & Chill leases; recovery write execution remains disabled until recovery validation is complete")
 
     case .statusJSON:
-        print(disabledMessage)
+        let response = try FanControlCommandContract.disabledActiveControlResponse(
+            for: command,
+            capability: capability
+        )
+        print(response.stdout, terminator: "")
+        exit(response.exitCode)
     }
 } catch {
     FileHandle.standardError.write(Data("\(error)\n".utf8))

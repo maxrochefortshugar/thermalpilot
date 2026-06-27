@@ -101,12 +101,79 @@ func repositoryFileURL(_ path: String) throws -> URL {
     throw TestFailure(description: "missing repository file \(path)")
 }
 
-func testControlExecutablePrintsMac165DisabledGate() throws {
+func testControlExecutableRoutesDisabledGateThroughCommandContract() throws {
     let source = try repositorySourceText("Sources/mlx-chill-control/main.swift")
 
     try expect(
-        source.contains("active fan control is disabled for Mac16,5"),
-        "mlx-chill-control should print the Mac16,5 active-control disabled gate"
+        source.contains("FanControlCommandContract.disabledActiveControlResponse"),
+        "mlx-chill-control should route disabled active-control output through the command contract"
+    )
+}
+
+func testDisabledActiveControlResponseFailsBoostCommands() throws {
+    let boost = try FanControlCommand.parse([
+        "boost", "max", "--for", "10m", "--i-understand-active-fan-control"
+    ])
+    let run = try FanControlCommand.parse([
+        "run", "--boost", "max", "--for", "10m", "--i-understand-active-fan-control",
+        "--", "/usr/bin/true"
+    ])
+
+    let boostResponse = try FanControlCommandContract.disabledActiveControlResponse(
+        for: boost,
+        capability: .mac165ValidatedOneShot
+    )
+    let runResponse = try FanControlCommandContract.disabledActiveControlResponse(
+        for: run,
+        capability: .mac165ValidatedOneShot
+    )
+
+    try expect(boostResponse.exitCode == 1, "disabled boost max should exit nonzero")
+    try expect(runResponse.exitCode == 1, "disabled run --boost max should exit nonzero")
+    try expect(
+        boostResponse.stdout == "active fan control is disabled for Mac16,5\n",
+        "disabled boost max should print the disabled active-control message"
+    )
+    try expect(
+        runResponse.stdout == "active fan control is disabled for Mac16,5\n",
+        "disabled run --boost max should print the disabled active-control message"
+    )
+}
+
+func testDisabledStatusJSONResponseIsParseable() throws {
+    let status = try FanControlCommand.parse(["status", "--json"])
+    let response = try FanControlCommandContract.disabledActiveControlResponse(
+        for: status,
+        capability: .mac165ValidatedOneShot
+    )
+
+    try expect(response.exitCode == 0, "disabled status --json should exit zero")
+    let object = try JSONSerialization.jsonObject(with: Data(response.stdout.utf8)) as? [String: Any]
+    try expect(object?["model"] as? String == "Mac16,5", "status JSON should include model")
+    try expect(object?["activeControlEnabled"] as? Bool == false, "status JSON should disable active control")
+    try expect(object?["boostExecutionEnabled"] as? Bool == false, "status JSON should disable boost execution")
+    try expect(object?["recoveryExecutionEnabled"] as? Bool == false, "status JSON should disable recovery execution")
+    try expect(
+        object?["message"] as? String == "active fan control is disabled for Mac16,5",
+        "status JSON should include the disabled active-control message"
+    )
+}
+
+func testReadmeDocumentsAutoLeaseInspectionOnly() throws {
+    let source = try repositorySourceText("README.md")
+    let normalizedSource = source.replacingOccurrences(
+        of: "\\s+",
+        with: " ",
+        options: .regularExpression
+    )
+
+    try expect(
+        normalizedSource.contains("`auto` currently performs lease inspection only"),
+        "README should say auto currently performs lease inspection only"
+    )
+    try expect(
+        normalizedSource.contains("recovery writes remain disabled until validation completes"),
+        "README should say recovery writes remain disabled until validation completes"
     )
 }
 
@@ -1933,7 +2000,10 @@ let tests: [(String, () throws -> Void)] = [
     ("SMCControlTransport keeps raw write private", testSMCControlTransportKeepsRawWritePrivate),
     ("SMCControlTransport writes only typed operations from capability", testSMCControlTransportWritesOnlyTypedOperationsFromCapability),
     ("SMCControlTransport SMCKeyData ABI layout", testSMCControlTransportKeyDataABILayout),
-    ("Control executable prints Mac16,5 disabled gate", testControlExecutablePrintsMac165DisabledGate),
+    ("Control executable routes disabled gate through command contract", testControlExecutableRoutesDisabledGateThroughCommandContract),
+    ("Disabled active-control response fails boost commands", testDisabledActiveControlResponseFailsBoostCommands),
+    ("Disabled status JSON response is parseable", testDisabledStatusJSONResponseIsParseable),
+    ("README documents auto lease inspection only", testReadmeDocumentsAutoLeaseInspectionOnly),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
     ("CLI parses auto", testCLIParsesAuto),

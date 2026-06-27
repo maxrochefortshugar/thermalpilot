@@ -22,8 +22,9 @@ Apple's automatic fan control.
 `mlx-chill-control` is present for active-control development and command
 parsing, but boost execution remains disabled until crash recovery,
 parent-death recovery, missed-heartbeat recovery, lease-expiry recovery, signal
-recovery, and sleep/wake recovery are validated on hardware. `auto` remains
-recovery-only for compatible existing MLX & Chill leases. The default
+recovery, and sleep/wake recovery are validated on hardware. `auto` currently
+performs lease inspection only; recovery writes remain disabled until validation
+completes. The default
 `mlx-chill` executable remains read-only.
 
 ## Build
