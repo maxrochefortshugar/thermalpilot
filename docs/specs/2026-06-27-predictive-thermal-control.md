@@ -16,9 +16,41 @@ cooling before the machine reaches a hot or throttled state.
 The active-control path must remain opt-in, reversible, auditable, and model
 allowlisted. Read-only mode remains the default.
 
+## Prior Art Check
+
+This section was revised after checking the MLX and Apple Silicon fan-control
+ecosystem on 2026-06-27.
+
+Important prior art exists:
+
+- ThermalForge is an open source Apple Silicon fan-control app/CLI. It claims a
+  Smart profile with rate-of-change awareness, proportional curves, watchdog
+  recovery, CSV/JSON logging, process correlation, and proactive cooling before
+  throttling.
+- MTPLX is an MLX/MTP inference project that integrates fan control through
+  ThermalForge or TG Pro. It has `default`, `smart`, and `max` fan modes.
+  MTPLX Smart mode ramps fans while model requests are active and restores fans
+  when the system goes idle. Its max path includes marker files, signal hooks,
+  and a detached sidecar to restore fans if the parent process dies.
+- The official `ml-explore/mlx`, `mlx-lm`, and `mlx-examples` repositories do
+  not appear to contain fan-control or thermal-control code based on GitHub code
+  search for `fan` and `thermal`.
+
+ThermalPilot should therefore not position itself as "the first MLX fan-control
+integration." That exists in MTPLX. ThermalPilot's useful open source wedge is
+to be the auditable thermal substrate:
+
+- model-specific SMC register discovery and capability files
+- hardware evidence capture with raw bytes
+- read-only telemetry and dry-run prediction
+- explicit safety specifications and tests
+- a small, reusable workload-intent API for any MLX or non-MLX runtime
+- optional interop with ThermalForge rather than duplicating active control
+  prematurely
+
 ## Product Gap
 
-Current Mac fan tools mostly provide reactive controls:
+Many Mac fan tools provide reactive controls:
 
 - fixed fan RPM
 - sensor-based fan curves
@@ -26,17 +58,27 @@ Current Mac fan tools mostly provide reactive controls:
 - manual boost modes
 - menu-bar telemetry
 
-Those tools are useful, but they generally respond to current temperature. They
-do not know that an MLX inference workload is about to run for several minutes,
-or that current heat slope plus sustained package power means the machine will
-likely throttle in 60-180 seconds.
+Those tools are useful, but most general-purpose tools still respond to current
+temperature or user-selected profiles. ThermalForge is the strongest exception:
+it already claims proactive Smart behavior based on temperature velocity.
+
+The remaining gap for ThermalPilot is not "fan curves." The gap is a
+vendor-neutral, testable contract for workload-aware thermal decisions:
+
+- Can a runtime tell the thermal system that a heavy workload is about to start?
+- Can the thermal system explain, in dry-run mode, why it would pre-cool?
+- Can decisions be reproduced from logged sensor windows and raw SMC evidence?
+- Can multiple runtimes share one safe thermal advisor/controller?
+- Can the active-control backend be swapped between ThermalForge, TG Pro, or a
+  future native ThermalPilot helper?
 
 ThermalPilot's differentiator is predictive pre-cooling:
 
 1. Observe temperatures, fan RPM, power sensors, and thermal state.
 2. Estimate short-horizon thermal risk.
 3. Use workload intent, especially MLX inference intent, as an early signal.
-4. Pre-cool upward for a bounded lease window.
+4. Pre-cool upward for a bounded lease window, preferably through a verified
+   backend such as ThermalForge before adding native writes.
 5. Restore system control automatically.
 
 ## Current Implementation Boundary
@@ -491,10 +533,16 @@ text or model inputs.
 - Print decisions such as `would_pre_cool normal 2900rpm for 60s`.
 - Compare predictions against later thermal state and temperature curves.
 - Tune thresholds without any fan writes.
+- Compare advisor decisions against ThermalForge Smart and MTPLX Smart fan
+  behavior on the same workloads.
 
 ### Phase 2: Privileged Helper Skeleton
 
-- Add helper process with no active write support by default.
+- Decide whether the first active backend should be ThermalForge interop or a
+  native helper. Prefer ThermalForge interop unless a concrete limitation
+  requires native writes.
+- Add helper process with no active write support by default if native control
+  is still justified.
 - Add lease, heartbeat, and rollback machinery.
 - Add simulated SMC backend for safety tests.
 - Keep real writes behind compile-time and runtime gates.
@@ -542,6 +590,10 @@ References:
 - Apple IOKit fundamentals: https://developer.apple.com/library/archive/documentation/DeviceDrivers/Conceptual/IOKitFundamentals/Introduction/Introduction.html
 - Linux macsmc hardware-monitoring documentation: https://docs.kernel.org/hwmon/macsmc-hwmon.html
 - Legacy SMC user-space tooling: https://github.com/jcsalterego/smc
+- ThermalForge Apple Silicon fan-control prior art: https://github.com/ProducerGuy/ThermalForge
+- MTPLX MLX fan-mode prior art: https://github.com/youssofal/MTPLX
+- MTPLX fan profiles: https://github.com/youssofal/MTPLX/blob/main/docs/profiles.md
+- MTPLX fan-control runtime: https://github.com/youssofal/MTPLX/blob/main/mtplx/thermal.py
 - Macs Fan Control prior art: https://crystalidea.com/macs-fan-control
 - iStat Menus fan-control prior art: https://bjango.com/help/istatmenus7/fans/
 - MLX Swift: https://github.com/ml-explore/mlx-swift
