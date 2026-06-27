@@ -45,8 +45,9 @@ to be the auditable thermal substrate:
 - read-only telemetry and dry-run prediction
 - explicit safety specifications and tests
 - a small, reusable workload-intent API for any MLX or non-MLX runtime
-- optional interop with ThermalForge rather than duplicating active control
-  prematurely
+- a native active-control helper, implemented with attribution where it adapts
+  MIT-licensed prior art, rather than depending on another fan-control CLI at
+  runtime
 
 ## Product Gap
 
@@ -69,16 +70,16 @@ vendor-neutral, testable contract for workload-aware thermal decisions:
 - Can the thermal system explain, in dry-run mode, why it would pre-cool?
 - Can decisions be reproduced from logged sensor windows and raw SMC evidence?
 - Can multiple runtimes share one safe thermal advisor/controller?
-- Can the active-control backend be swapped between ThermalForge, TG Pro, or a
-  future native ThermalPilot helper?
+- Can the active-control backend remain native to ThermalPilot, with no runtime
+  dependency on ThermalForge, TG Pro, or other fan-control tools?
 
 ThermalPilot's differentiator is predictive pre-cooling:
 
 1. Observe temperatures, fan RPM, power sensors, and thermal state.
 2. Estimate short-horizon thermal risk.
 3. Use workload intent, especially MLX inference intent, as an early signal.
-4. Pre-cool upward for a bounded lease window, preferably through a verified
-   backend such as ThermalForge before adding native writes.
+4. Pre-cool upward for a bounded lease window through ThermalPilot's own
+   native helper.
 5. Restore system control automatically.
 
 ## Current Implementation Boundary
@@ -538,11 +539,13 @@ text or model inputs.
 
 ### Phase 2: Privileged Helper Skeleton
 
-- Decide whether the first active backend should be ThermalForge interop or a
-  native helper. Prefer ThermalForge interop unless a concrete limitation
-  requires native writes.
-- Add helper process with no active write support by default if native control
-  is still justified.
+- Add a native ThermalPilot helper process with no active write support by
+  default.
+- Do not shell out to ThermalForge, TG Pro, Macs Fan Control, or any other
+  fan-control CLI at runtime.
+- If ThermalPilot adapts MIT-licensed implementation details from ThermalForge,
+  keep the copied/adapted code small and retain explicit copyright and license
+  attribution in source and documentation.
 - Add lease, heartbeat, and rollback machinery.
 - Add simulated SMC backend for safety tests.
 - Keep real writes behind compile-time and runtime gates.
@@ -582,6 +585,18 @@ The SMC command numbers and key conventions are private AppleSMC conventions
 documented by open source tools and drivers, not by Apple as a public fan
 control API. ThermalPilot should preserve source links in code comments where
 private conventions are encoded.
+
+ThermalForge is MIT licensed and may be used as implementation prior art.
+ThermalPilot must not depend on the ThermalForge CLI, app, daemon, socket, or
+install flow at runtime. If code is copied or adapted, preserve ThermalForge's
+MIT copyright notice:
+
+```text
+Portions of the SMC fan-control implementation are adapted from ThermalForge:
+https://github.com/ProducerGuy/ThermalForge
+Copyright (c) 2026 ProducerGuy
+Licensed under the MIT License.
+```
 
 References:
 
