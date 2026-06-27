@@ -6,6 +6,110 @@ func testCoreBoundary() throws {
     try expect(key.stringValue == "F0Tg", "FanKey should preserve four-character keys")
 }
 
+func testCLIParsesBoundedBoostDuration() throws {
+    let command = try FanControlCommand.parse(["boost", "max", "--for", "10m", "--i-understand-active-fan-control"])
+
+    try expect(
+        command == .boostMax(durationSeconds: 600, acknowledgedRisk: true),
+        "boost max should parse a bounded minute duration with explicit acknowledgement"
+    )
+}
+
+func testCLIParsesStatusJSON() throws {
+    let command = try FanControlCommand.parse(["status", "--json"])
+
+    try expect(command == .statusJSON, "status --json should parse as the status JSON command")
+}
+
+func testCLIParsesAuto() throws {
+    let command = try FanControlCommand.parse(["auto"])
+
+    try expect(command == .auto, "auto should parse as the automatic restore command")
+}
+
+func testCLIUsesDefaultBoostDuration() throws {
+    let command = try FanControlCommand.parse(["boost", "max", "--i-understand-active-fan-control"])
+
+    try expect(
+        command == .boostMax(durationSeconds: 600, acknowledgedRisk: true),
+        "boost max should default to a 600 second duration"
+    )
+}
+
+func testCLIRejectsMissingAcknowledgement() throws {
+    try expectThrows("boost max should reject missing acknowledgement", {
+        _ = try FanControlCommand.parse(["boost", "max", "--for", "10m"])
+    }, matching: { _ in true })
+}
+
+func testCLIRejectsLeaseOverTwoHours() throws {
+    try expectThrows("boost max should reject duration above two hours", {
+        _ = try FanControlCommand.parse(["boost", "max", "--for", "121m", "--i-understand-active-fan-control"])
+    }, matching: { _ in true })
+}
+
+func testCLIRunParsesWorkloadAndDuration() throws {
+    let command = try FanControlCommand.parse([
+        "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control",
+        "--", "echo", "hello"
+    ])
+
+    try expect(
+        command == .runBoostMax(durationSeconds: 1, workload: ["echo", "hello"], acknowledgedRisk: true),
+        "run --boost max should parse control duration and workload"
+    )
+}
+
+func testCLIRunIgnoresWorkloadFlagsAfterDelimiter() throws {
+    let command = try FanControlCommand.parse([
+        "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control",
+        "--", "worker", "--for", "121m", "--not-a-control-flag"
+    ])
+
+    try expect(
+        command == .runBoostMax(
+            durationSeconds: 1,
+            workload: ["worker", "--for", "121m", "--not-a-control-flag"],
+            acknowledgedRisk: true
+        ),
+        "run workload flags after -- should not affect fan-control parsing"
+    )
+}
+
+func testCLIRunRejectsMissingDelimiter() throws {
+    try expectThrows("run should reject missing workload delimiter", {
+        _ = try FanControlCommand.parse([
+            "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control", "echo"
+        ])
+    }, matching: { _ in true })
+}
+
+func testCLIRunRejectsEmptyWorkload() throws {
+    try expectThrows("run should reject empty workload", {
+        _ = try FanControlCommand.parse([
+            "run", "--boost", "max", "--for", "1s", "--i-understand-active-fan-control", "--"
+        ])
+    }, matching: { _ in true })
+}
+
+func testCLIRejectsUnknownDurationUnit() throws {
+    try expectThrows("boost max should reject unknown duration unit", {
+        _ = try FanControlCommand.parse(["boost", "max", "--for", "1h", "--i-understand-active-fan-control"])
+    }, matching: { _ in true })
+}
+
+func testCLIRejectsZeroDuration() throws {
+    try expectThrows("boost max should reject zero duration", {
+        _ = try FanControlCommand.parse(["boost", "max", "--for", "0s", "--i-understand-active-fan-control"])
+    }, matching: { _ in true })
+}
+
+func testCLIRejectsNegativeDuration() throws {
+    try expectThrows("boost max should reject negative duration", {
+        _ = try FanControlCommand.parse(["boost", "max", "--for", "-1s", "--i-understand-active-fan-control"])
+    }, matching: { _ in true })
+}
+
 func testMac165Capability() throws {
     let capability = FanCapability.mac165ValidatedOneShot
     let mode0 = try capability.modeKey(for: 0)
@@ -1701,6 +1805,19 @@ func expectStatusInvalidReading(_ message: String, key: String, mutate: (FakeSMC
 
 let tests: [(String, () throws -> Void)] = [
     ("Core boundary", testCoreBoundary),
+    ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
+    ("CLI parses status JSON", testCLIParsesStatusJSON),
+    ("CLI parses auto", testCLIParsesAuto),
+    ("CLI uses default boost duration", testCLIUsesDefaultBoostDuration),
+    ("CLI rejects missing acknowledgement", testCLIRejectsMissingAcknowledgement),
+    ("CLI rejects lease over two hours", testCLIRejectsLeaseOverTwoHours),
+    ("CLI run parses workload and duration", testCLIRunParsesWorkloadAndDuration),
+    ("CLI run ignores workload flags after delimiter", testCLIRunIgnoresWorkloadFlagsAfterDelimiter),
+    ("CLI run rejects missing delimiter", testCLIRunRejectsMissingDelimiter),
+    ("CLI run rejects empty workload", testCLIRunRejectsEmptyWorkload),
+    ("CLI rejects unknown duration unit", testCLIRejectsUnknownDurationUnit),
+    ("CLI rejects zero duration", testCLIRejectsZeroDuration),
+    ("CLI rejects negative duration", testCLIRejectsNegativeDuration),
     ("Mac16,5 capability", testMac165Capability),
     ("Resolver succeeds for validated Mac16,5 inventory", testResolverSucceedsForValidatedMac165Inventory),
     ("Resolver rejects wrong model", testResolverRejectsWrongModel),

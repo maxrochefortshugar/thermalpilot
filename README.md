@@ -19,6 +19,10 @@ Apple's automatic fan control.
 - no background daemon
 - no sudo requirement for the default probe
 
+`mlx-chill-control` is present for active-control development and command
+parsing, but execution remains disabled until crash and sleep/wake recovery are
+validated. The default `mlx-chill` executable remains read-only.
+
 ## Build
 
 ```sh
