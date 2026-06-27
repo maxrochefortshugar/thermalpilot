@@ -383,6 +383,80 @@ func testJSONLAuditLoggerEncodesTask5FieldNames() throws {
     ], "JSONL audit event should encode exact Task 5 field names")
 }
 
+func testJSONLAuditLoggerEncodesNilLeaseIDAsNull() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("fan-audit-\(UUID().uuidString)")
+        .appendingPathExtension("jsonl")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let logger = JSONLFanControlLogger(url: url)
+    try logger.record(FanWriteAuditEvent(
+        timestampUnix: 1,
+        serviceName: "FakeSMC",
+        capabilityFingerprint: "Mac16,5|j616c|2|F%dMd|true",
+        leaseID: nil,
+        key: "Ftst",
+        oldRaw: [0],
+        newRaw: [1],
+        kernReturn: 0,
+        smcResult: 0,
+        smcStatus: 0,
+        reason: "nil lease"
+    ))
+
+    let data = try Data(contentsOf: url)
+    let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+    try expect(lines.count == 1, "JSONL logger should write one event line")
+
+    let object = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
+    try expect(object?.keys.contains("leaseID") == true, "nil leaseID should be present in JSON schema")
+    try expect(object?["leaseID"] is NSNull, "nil leaseID should encode as JSON null")
+}
+
+func testJSONLAuditLoggerAppendsTwoParseableLines() throws {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("fan-audit-\(UUID().uuidString)")
+        .appendingPathExtension("jsonl")
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let logger = JSONLFanControlLogger(url: url)
+    try logger.record(FanWriteAuditEvent(
+        timestampUnix: 1,
+        serviceName: "FakeSMC",
+        capabilityFingerprint: "first",
+        leaseID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+        key: "Ftst",
+        oldRaw: [0],
+        newRaw: [1],
+        kernReturn: 0,
+        smcResult: 0,
+        smcStatus: 0,
+        reason: "first"
+    ))
+    try logger.record(FanWriteAuditEvent(
+        timestampUnix: 2,
+        serviceName: "FakeSMC",
+        capabilityFingerprint: "second",
+        leaseID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+        key: "F0Md",
+        oldRaw: [2],
+        newRaw: [3],
+        kernReturn: 0,
+        smcResult: 0,
+        smcStatus: 0,
+        reason: "second"
+    ))
+
+    let data = try Data(contentsOf: url)
+    let lines = String(decoding: data, as: UTF8.self).split(separator: "\n")
+    try expect(lines.count == 2, "JSONL logger should preserve first line and append second line")
+
+    let first = try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
+    let second = try JSONSerialization.jsonObject(with: Data(lines[1].utf8)) as? [String: Any]
+    try expect(first?["capabilityFingerprint"] as? String == "first", "first JSONL event should be preserved")
+    try expect(second?["capabilityFingerprint"] as? String == "second", "second JSONL event should be appended")
+}
+
 func testFakeSMCDelayedFtstReadback() throws {
     let smc = FakeSMC.mac165()
     let first = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "test unlock")
@@ -764,6 +838,8 @@ let tests: [(String, () throws -> Void)] = [
     ("Status reports fan min/max out of bounds", testStatusReportsFanMinMaxOutOfBounds),
     ("Audit event records write details", testAuditEventRecordsWriteDetails),
     ("JSONL audit logger encodes Task 5 field names", testJSONLAuditLoggerEncodesTask5FieldNames),
+    ("JSONL audit logger encodes nil leaseID as null", testJSONLAuditLoggerEncodesNilLeaseIDAsNull),
+    ("JSONL audit logger appends two parseable lines", testJSONLAuditLoggerAppendsTwoParseableLines),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
     ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),

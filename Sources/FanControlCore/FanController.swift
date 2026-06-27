@@ -10,6 +10,7 @@ package final class FanController {
         hardware: FanHardware,
         capability: FanCapability,
         clock: FanControlClock = SystemFanControlClock(),
+        // Active write construction must inject a durable logger; this default is for read/status paths and tests.
         logger: FanControlLogger = InMemoryFanControlLogger()
     ) {
         self.hardware = hardware
