@@ -4,11 +4,18 @@ package final class FanController {
     private let hardware: FanHardware
     private let capability: FanCapability
     private let clock: FanControlClock
+    private let logger: FanControlLogger
 
-    package init(hardware: FanHardware, capability: FanCapability, clock: FanControlClock = SystemFanControlClock()) {
+    package init(
+        hardware: FanHardware,
+        capability: FanCapability,
+        clock: FanControlClock = SystemFanControlClock(),
+        logger: FanControlLogger = InMemoryFanControlLogger()
+    ) {
         self.hardware = hardware
         self.capability = capability
         self.clock = clock
+        self.logger = logger
     }
 
     package func status() throws -> FanControlStatus {

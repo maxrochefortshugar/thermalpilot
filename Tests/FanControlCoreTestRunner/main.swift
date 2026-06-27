@@ -314,6 +314,26 @@ func testStatusReportsFanMinMaxOutOfBounds() throws {
     try expect(status.activeAvailability.reasons.contains("fan min/max out of bounds"), "out-of-bounds fan min/max reason should be included")
 }
 
+func testAuditEventRecordsWriteDetails() throws {
+    let logger = InMemoryFanControlLogger()
+    let event = FanWriteAuditEvent(
+        timestampUnix: 1_800_000_123,
+        serviceName: "FakeSMC",
+        key: try FanKey("F0Tg"),
+        reason: "test target write",
+        requestedBytes: FanEncoding.float32LittleEndian(2_000),
+        oldBytes: FanEncoding.float32LittleEndian(0),
+        resultBytes: FanEncoding.float32LittleEndian(2_000),
+        kernReturn: 0,
+        smcResult: 0,
+        smcStatus: 0
+    )
+
+    try logger.record(event)
+
+    try expect(logger.events == [event], "in-memory audit logger should record write details")
+}
+
 func testFakeSMCDelayedFtstReadback() throws {
     let smc = FakeSMC.mac165()
     let first = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "test unlock")
@@ -693,6 +713,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Status rejects wrong RPlt type", testStatusRejectsWrongPlatformType),
     ("Status rejects RPlt size mismatch", testStatusRejectsPlatformSizeMismatch),
     ("Status reports fan min/max out of bounds", testStatusReportsFanMinMaxOutOfBounds),
+    ("Audit event records write details", testAuditEventRecordsWriteDetails),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
     ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),
