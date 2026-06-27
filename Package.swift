@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "mlx-chill", targets: ["mlx-chill"]),
+        .executable(name: "mlx-chill-control", targets: ["mlx-chill-control"]),
         .library(name: "FanProbeCore", targets: ["FanProbeCore"])
     ],
     targets: [
@@ -23,14 +24,33 @@ let package = Package(
             name: "FanProbeCore",
             dependencies: ["CSMC"]
         ),
+        .target(
+            name: "FanControlCore"
+        ),
+        .target(
+            name: "SMCControlTransport",
+            dependencies: ["FanControlCore"],
+            linkerSettings: [
+                .linkedFramework("IOKit")
+            ]
+        ),
         .executableTarget(
             name: "mlx-chill",
             dependencies: ["FanProbeCore"]
         ),
         .executableTarget(
+            name: "mlx-chill-control",
+            dependencies: ["FanControlCore", "SMCControlTransport"]
+        ),
+        .executableTarget(
             name: "FanProbeCoreTestRunner",
             dependencies: ["FanProbeCore"],
             path: "Tests/FanProbeCoreTestRunner"
+        ),
+        .executableTarget(
+            name: "FanControlCoreTestRunner",
+            dependencies: ["FanControlCore"],
+            path: "Tests/FanControlCoreTestRunner"
         )
     ]
 )
