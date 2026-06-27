@@ -120,6 +120,22 @@ func testResolverPropagatesUnreadableFtst() throws {
     })
 }
 
+func testStatusReadsFanCountAndAvailability() throws {
+    let smc = FakeSMC.mac165()
+    let capability = FanCapability.mac165ValidatedOneShot
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.serviceName == "FakeSMC", "status should include service name")
+    try expect(status.fanCount == 2, "status should read FNum")
+    try expect(status.platform == "j616c", "status should read platform")
+    try expect(status.fans.count == 2, "status should include two fans")
+    try expect(status.fans[0].mode == 3, "mode should decode")
+    try expect(status.activeAvailability.allowed == false, "active control should not be allowed yet")
+    try expect(status.activeAvailability.reasons.contains("crash recovery unverified"), "availability should explain crash gate")
+}
+
 func testFakeSMCDelayedFtstReadback() throws {
     let smc = FakeSMC.mac165()
     let first = try smc.write(.unlock(value: 1), capability: .mac165ValidatedOneShot, reason: "test unlock")
@@ -427,6 +443,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Resolver propagates missing uppercase mode key", testResolverPropagatesMissingUppercaseModeKey),
     ("Resolver propagates missing Ftst", testResolverPropagatesMissingFtst),
     ("Resolver propagates unreadable Ftst", testResolverPropagatesUnreadableFtst),
+    ("Status reads fan count and availability", testStatusReadsFanCountAndAvailability),
     ("FakeSMC delayed Ftst readback", testFakeSMCDelayedFtstReadback),
     ("FakeSMC rejects early manual", testFakeSMCRejectsManualBeforeUnlockSettles),
     ("FakeSMC rejects manual without safe pre-manual target", testFakeSMCRejectsManualWithoutSafePreManualTarget),

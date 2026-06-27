@@ -85,3 +85,18 @@ func fakeFanInventory(overrides: [String: FanReading] = [:], failures: [String: 
     readings.merge(overrides) { _, new in new }
     return FakeFanReader(readings: readings, failures: failures)
 }
+
+final class TestClock: FanControlClock {
+    var nowUnix: TimeInterval
+    private let onSleep: (() -> Void)?
+
+    init(nowUnix: TimeInterval = 1_800_000_000, onSleep: (() -> Void)? = nil) {
+        self.nowUnix = nowUnix
+        self.onSleep = onSleep
+    }
+
+    func sleep(seconds: Double) {
+        nowUnix += seconds
+        onSleep?()
+    }
+}

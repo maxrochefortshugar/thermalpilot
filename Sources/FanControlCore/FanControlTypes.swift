@@ -104,3 +104,70 @@ public enum FanEncoding {
         return value.isFinite ? value : nil
     }
 }
+
+public struct FanStatus: Equatable, Sendable {
+    public let index: Int
+    public let actualRPM: Float
+    public let minimumRPM: Float
+    public let maximumRPM: Float
+    public let targetRPM: Float
+    public let targetRaw: [UInt8]
+    public let mode: UInt8
+    public let modeRaw: [UInt8]
+
+    public init(index: Int, actualRPM: Float, minimumRPM: Float, maximumRPM: Float, targetRPM: Float, targetRaw: [UInt8], mode: UInt8, modeRaw: [UInt8]) {
+        self.index = index
+        self.actualRPM = actualRPM
+        self.minimumRPM = minimumRPM
+        self.maximumRPM = maximumRPM
+        self.targetRPM = targetRPM
+        self.targetRaw = targetRaw
+        self.mode = mode
+        self.modeRaw = modeRaw
+    }
+}
+
+public struct ActiveAvailability: Equatable, Sendable {
+    public let allowed: Bool
+    public let reasons: [String]
+
+    public init(allowed: Bool, reasons: [String]) {
+        self.allowed = allowed
+        self.reasons = reasons
+    }
+}
+
+public struct FanControlStatus: Equatable, Sendable {
+    public let serviceName: String
+    public let platform: String
+    public let fanCount: Int
+    public let fans: [FanStatus]
+    public let ftst: UInt8?
+    public let activeAvailability: ActiveAvailability
+
+    public init(serviceName: String, platform: String, fanCount: Int, fans: [FanStatus], ftst: UInt8?, activeAvailability: ActiveAvailability) {
+        self.serviceName = serviceName
+        self.platform = platform
+        self.fanCount = fanCount
+        self.fans = fans
+        self.ftst = ftst
+        self.activeAvailability = activeAvailability
+    }
+}
+
+public protocol FanControlClock {
+    var nowUnix: TimeInterval { get }
+    func sleep(seconds: Double)
+}
+
+public struct SystemFanControlClock: FanControlClock {
+    public init() {}
+
+    public var nowUnix: TimeInterval {
+        Date().timeIntervalSince1970
+    }
+
+    public func sleep(seconds: Double) {
+        Thread.sleep(forTimeInterval: seconds)
+    }
+}
