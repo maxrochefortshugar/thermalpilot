@@ -1,14 +1,14 @@
-# ThermalPilot
+# MLX & Chill
 
-ThermalPilot is a read-only macOS fan and thermal probe.
+MLX & Chill is a read-only macOS fan and thermal probe for local AI workloads.
 
 The first release focuses on trustworthy telemetry: fan count, current/min/max
 RPM, selected temperature sensors, selected power sensors, and explicit SMC key
 reads with raw bytes for auditability.
 
-The longer-term goal is a smarter open source thermal assistant for Apple
-Silicon machines: use local workload signals, MLX/AI inference activity, and
-thermal history to avoid performance throttling before it happens.
+The longer-term goal is a native open source thermal assistant for Apple
+Silicon machines: boost fans before local MLX/AI inference, then restore
+Apple's automatic fan control.
 
 ## Status
 
@@ -28,19 +28,19 @@ swift build -c release
 ## Run
 
 ```sh
-.build/release/thermalpilot
+.build/release/mlx-chill
 ```
 
 Read explicit SMC keys:
 
 ```sh
-.build/release/thermalpilot FNum F0Ac F0Mn F0Mx F0Tg
+.build/release/mlx-chill FNum F0Ac F0Mn F0Mx F0Tg
 ```
 
 Example output:
 
 ```text
-ThermalPilot (read-only)
+MLX & Chill (read-only)
 
 SMC
   Status: readable
@@ -84,10 +84,10 @@ make read-only mode the default.
 - Improve sensor labeling for Apple Silicon models.
 - Add a compact menu-bar or terminal dashboard.
 - Record bounded local thermal history.
-- Correlate thermal state with MLX inference workloads.
-- Add predictive recommendations before considering any control loop.
+- Add native max-boost and auto-restore fan control.
+- Add a workload wrapper for MLX inference commands.
 - Keep all active fan-control work opt-in and auditable.
 
 ## License
 
-MIT
+Apache-2.0

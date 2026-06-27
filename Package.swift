@@ -3,12 +3,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "thermalpilot",
+    name: "mlx-chill",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "thermalpilot", targets: ["thermalpilot"]),
+        .executable(name: "mlx-chill", targets: ["mlx-chill"]),
         .library(name: "FanProbeCore", targets: ["FanProbeCore"])
     ],
     targets: [
@@ -24,7 +24,7 @@ let package = Package(
             dependencies: ["CSMC"]
         ),
         .executableTarget(
-            name: "thermalpilot",
+            name: "mlx-chill",
             dependencies: ["FanProbeCore"]
         ),
         .executableTarget(

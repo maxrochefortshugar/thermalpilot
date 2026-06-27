@@ -83,7 +83,7 @@ public enum FanProbe {
     public static func render(_ snapshot: FanProbeSnapshot) -> String {
         var lines: [String] = []
 
-        lines.append("ThermalPilot (read-only)")
+        lines.append("MLX & Chill (read-only)")
         lines.append("")
         lines.append("Host")
         lines.append("  Model: \(snapshot.host.model)")

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a standalone macOS read-only fan and thermal probe under `/Users/maxshugar/Development/thermalpilot`.
+**Goal:** Build a standalone macOS read-only fan and thermal probe under `/Users/maxshugar/Development/mlx-chill`.
 
 **Architecture:** The command-line app is Swift. A small C target handles the private AppleSMC struct layout and exposes read-only functions only. Swift owns decoding, snapshot assembly, output formatting, and tests.
 
@@ -59,7 +59,7 @@ Wrap the C calls in `SMCClient`, returning Swift values and errors.
 
 **Files:**
 - Create: `Sources/FanProbeCore/FanProbe.swift`
-- Create: `Sources/thermalpilot/main.swift`
+- Create: `Sources/mlx-chill/main.swift`
 - Create: `README.md`
 
 - [ ] **Step 1: Assemble host and SMC snapshot**
@@ -84,5 +84,5 @@ Expected: PASS.
 
 - [ ] **Step 3: Run local read-only probe**
 
-Run: `.build/release/thermalpilot`
+Run: `.build/release/mlx-chill`
 Expected: Prints host data and either SMC values or unavailable messages without requesting sudo.

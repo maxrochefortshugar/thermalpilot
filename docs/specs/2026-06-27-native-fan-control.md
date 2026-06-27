@@ -5,7 +5,7 @@ Date: 2026-06-27
 
 ## Goal
 
-Build a native ThermalPilot fan-control module for Apple Silicon Macs.
+Build a native MLX & Chill fan-control module for Apple Silicon Macs.
 
 Initial active mode is deliberately simple:
 
@@ -27,8 +27,9 @@ MLX-workload fan behavior:
 - ThermalForge: https://github.com/ProducerGuy/ThermalForge
 - MTPLX: https://github.com/youssofal/MTPLX
 
-ThermalForge is MIT licensed. ThermalPilot may adapt small implementation
-details, but must preserve attribution in any copied/adapted source:
+MLX & Chill is Apache-2.0 licensed. ThermalForge is MIT licensed. MLX & Chill
+may adapt small implementation details, but must preserve MIT attribution in
+any copied/adapted source:
 
 ```text
 Portions of the SMC fan-control implementation are adapted from ThermalForge:
@@ -39,7 +40,7 @@ Licensed under the MIT License.
 
 ## SMC Transport
 
-ThermalPilot talks to the AppleSMC user client through IOKit.
+MLX & Chill talks to the AppleSMC user client through IOKit.
 
 Known service names:
 
@@ -48,7 +49,7 @@ Known service names:
 | `AppleSMCKeysEndpoint` | Observed on local `Mac16,5` M4 Max. |
 | `AppleSMC` | Used by older AppleSMC tools and ThermalForge. |
 
-ThermalPilot should try both services and record which one opened.
+MLX & Chill should try both services and record which one opened.
 
 IOKit call shape:
 
@@ -84,7 +85,7 @@ All keys are four ASCII bytes.
 
 ### Legacy Key Not Required
 
-| Key | Meaning | ThermalPilot policy |
+| Key | Meaning | MLX & Chill policy |
 | --- | --- | --- |
 | `FS! ` | Legacy fan forced-mode bitmask. | Do not require. It is unavailable on local `Mac16,5`. |
 
@@ -96,7 +97,7 @@ until separately validated.
 Observed on `Mac16,5` / M4 Max / platform `j616c`:
 
 ```sh
-.build/release/thermalpilot FNum F0Ac F0Mn F0Mx F0Tg F1Ac F1Mn F1Mx F1Tg F0Md F1Md 'FS! ' Ftst RPlt
+.build/release/mlx-chill FNum F0Ac F0Mn F0Mx F0Tg F1Ac F1Mn F1Mx F1Tg F0Md F1Md 'FS! ' Ftst RPlt
 ```
 
 | Key | Value | Raw |
@@ -247,7 +248,7 @@ Defaults:
 Restore auto on:
 
 - normal workload exit
-- explicit `thermalpilot auto`
+- explicit `mlx-chill auto`
 - Ctrl-C
 - SIGTERM
 - parent process death
@@ -322,13 +323,13 @@ Set `active_control.enabled: true` only after local hardware validation proves:
 Target commands:
 
 ```sh
-thermalpilot status --json
-thermalpilot boost max --for 10m
-thermalpilot auto
-thermalpilot run --boost max -- <workload command>
+mlx-chill status --json
+mlx-chill boost max --for 10m
+mlx-chill auto
+mlx-chill run --boost max -- <workload command>
 ```
 
-`thermalpilot run --boost max -- <workload>` flow:
+`mlx-chill run --boost max -- <workload>` flow:
 
 1. Start helper lease.
 2. Verify fans ramp.

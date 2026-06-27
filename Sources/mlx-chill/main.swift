@@ -5,13 +5,13 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 
 if arguments.contains("--help") || arguments.contains("-h") {
     print("""
-    thermalpilot
+    mlx-chill
 
     Read-only Mac fan and thermal SMC probe.
 
     Usage:
-      thermalpilot              Print host, fan, temperature, and power snapshot
-      thermalpilot FNum F0Ac    Read explicit four-character SMC keys
+      mlx-chill              Print host, fan, temperature, and power snapshot
+      mlx-chill FNum F0Ac    Read explicit four-character SMC keys
 
     This tool does not expose any SMC write operation.
     """)
