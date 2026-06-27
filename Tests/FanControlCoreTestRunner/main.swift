@@ -8,10 +8,15 @@ func testCoreBoundary() throws {
 
 func testCLIParsesBoundedBoostDuration() throws {
     let command = try FanControlCommand.parse(["boost", "max", "--for", "10m", "--i-understand-active-fan-control"])
+    let maxCommand = try FanControlCommand.parse(["boost", "max", "--for", "120m", "--i-understand-active-fan-control"])
 
     try expect(
         command == .boostMax(durationSeconds: 600, acknowledgedRisk: true),
         "boost max should parse a bounded minute duration with explicit acknowledgement"
+    )
+    try expect(
+        maxCommand == .boostMax(durationSeconds: 7_200, acknowledgedRisk: true),
+        "boost max should accept a two-hour duration boundary with explicit acknowledgement"
     )
 }
 
@@ -40,6 +45,15 @@ func testCLIRejectsMissingAcknowledgement() throws {
     try expectThrows("boost max should reject missing acknowledgement", {
         _ = try FanControlCommand.parse(["boost", "max", "--for", "10m"])
     }, matching: { _ in true })
+
+    try expectThrows("run should reject acknowledgement after workload delimiter", {
+        _ = try FanControlCommand.parse([
+            "run", "--boost", "max", "--for", "10m",
+            "--", "--i-understand-active-fan-control", "python", "script.py"
+        ])
+    }, matching: { error in
+        error as? FanControlCommandParseError == .missingAcknowledgement
+    })
 }
 
 func testCLIRejectsLeaseOverTwoHours() throws {
@@ -95,6 +109,10 @@ func testCLIRunRejectsEmptyWorkload() throws {
 func testCLIRejectsUnknownDurationUnit() throws {
     try expectThrows("boost max should reject unknown duration unit", {
         _ = try FanControlCommand.parse(["boost", "max", "--for", "1h", "--i-understand-active-fan-control"])
+    }, matching: { _ in true })
+
+    try expectThrows("boost max should reject fractional minute duration", {
+        _ = try FanControlCommand.parse(["boost", "max", "--for", "1.5m", "--i-understand-active-fan-control"])
     }, matching: { _ in true })
 }
 
