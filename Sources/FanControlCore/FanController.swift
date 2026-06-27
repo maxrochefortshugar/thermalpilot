@@ -170,7 +170,7 @@ package final class FanController {
         else {
             throw FanControlError.unsafeState("fan count mismatch during restore")
         }
-        let capturedTargets = try capturedTargetsByFanIndex(lease)
+        let capturedTargets = try validateCapturedFansByFanIndex(lease, snapshot: snapshot)
 
         for fan in snapshot.fans {
             try write(.target(fan: fan.index, bytes: FanEncoding.float32LittleEndian(fan.maximumRPM)), lease: lease, reason: "restore protective high target: \(reason)")
@@ -531,17 +531,36 @@ package final class FanController {
         }
     }
 
-    private func capturedTargetsByFanIndex(_ lease: FanLease) throws -> [Int: [UInt8]] {
+    private func validateCapturedFansByFanIndex(_ lease: FanLease, snapshot: FanControlStatus) throws -> [Int: [UInt8]] {
         var targets: [Int: [UInt8]] = [:]
+        let fansByIndex = Dictionary(uniqueKeysWithValues: snapshot.fans.map { ($0.index, $0) })
         for fan in lease.capturedFans {
             guard targets[fan.index] == nil else {
                 throw FanControlError.restoreFailed("lease contains duplicate captured target for fan \(fan.index)")
             }
+
+            guard let currentFan = fansByIndex[fan.index] else {
+                throw FanControlError.restoreFailed("lease captured fan indices do not match capability fan count")
+            }
+
+            guard fan.modeRaw.count == 1,
+                  fan.modeRaw.first != capability.manualCommand
+            else {
+                throw FanControlError.restoreFailed("lease contains invalid captured mode for fan \(fan.index)")
+            }
+
             guard fan.targetRaw.count == 4,
-                  FanEncoding.floatValue(fan.targetRaw) != nil
+                  let capturedTarget = FanEncoding.floatValue(fan.targetRaw)
             else {
                 throw FanControlError.restoreFailed("lease contains invalid captured target for fan \(fan.index)")
             }
+
+            guard capturedTarget == 0
+                    || (capturedTarget >= currentFan.minimumRPM && capturedTarget <= currentFan.maximumRPM)
+            else {
+                throw FanControlError.restoreFailed("lease contains out-of-range captured target for fan \(fan.index)")
+            }
+
             targets[fan.index] = fan.targetRaw
         }
         let expectedIndices = Set(0..<capability.fanCount)

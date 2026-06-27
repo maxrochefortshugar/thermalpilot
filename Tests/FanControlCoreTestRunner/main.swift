@@ -1816,6 +1816,51 @@ func testRestoreNaNCapturedTargetFailsClosedBeforeWritingOrClearingLease() throw
     try expect(try store.readIfPresent() == lease, "NaN captured target restore should not clear lease")
 }
 
+func testRestoreAboveMaximumCapturedTargetFailsClosedBeforeWritingOrClearingLease() throws {
+    try expectMalformedCapturedLeaseFailsClosedBeforeWritingOrClearingLease(
+        directoryName: "restore-above-maximum-captured-target",
+        capturedFans: capturedFans(modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(6_000)),
+        restoreReason: "above maximum target",
+        expectedMessage: "captured target"
+    )
+}
+
+func testRestoreNegativeCapturedTargetFailsClosedBeforeWritingOrClearingLease() throws {
+    try expectMalformedCapturedLeaseFailsClosedBeforeWritingOrClearingLease(
+        directoryName: "restore-negative-captured-target",
+        capturedFans: capturedFans(modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(-1)),
+        restoreReason: "negative target",
+        expectedMessage: "captured target"
+    )
+}
+
+func testRestoreBelowMinimumNonzeroCapturedTargetFailsClosedBeforeWritingOrClearingLease() throws {
+    try expectMalformedCapturedLeaseFailsClosedBeforeWritingOrClearingLease(
+        directoryName: "restore-below-minimum-captured-target",
+        capturedFans: capturedFans(modeRaw: [activeTestCapability().managedObservedState], targetRaw: FanEncoding.float32LittleEndian(1_000)),
+        restoreReason: "below minimum target",
+        expectedMessage: "captured target"
+    )
+}
+
+func testRestoreEmptyCapturedModeFailsClosedBeforeWritingOrClearingLease() throws {
+    try expectMalformedCapturedLeaseFailsClosedBeforeWritingOrClearingLease(
+        directoryName: "restore-empty-captured-mode",
+        capturedFans: capturedFans(modeRaw: [], targetRaw: FanEncoding.float32LittleEndian(0)),
+        restoreReason: "empty mode",
+        expectedMessage: "captured mode"
+    )
+}
+
+func testRestoreManualCapturedModeFailsClosedBeforeWritingOrClearingLease() throws {
+    try expectMalformedCapturedLeaseFailsClosedBeforeWritingOrClearingLease(
+        directoryName: "restore-manual-captured-mode",
+        capturedFans: capturedFans(modeRaw: [activeTestCapability().manualCommand], targetRaw: FanEncoding.float32LittleEndian(0)),
+        restoreReason: "manual mode",
+        expectedMessage: "captured mode"
+    )
+}
+
 func testRestoreConvergesFromPartialRollbackState() throws {
     let smc = FakeSMC.mac165()
     let store = FanLeaseStore(directory: temporaryDirectory("restore-partial-rollback"))
@@ -1972,6 +2017,34 @@ func restoreController(
         leaseStore: store,
         processInspector: TestProcessInspector(ownerProcesses: [:])
     )
+}
+
+func capturedFans(modeRaw: [UInt8], targetRaw: [UInt8]) -> [CapturedFanState] {
+    (0..<activeTestCapability().fanCount).map {
+        CapturedFanState(index: $0, modeRaw: modeRaw, targetRaw: targetRaw)
+    }
+}
+
+func expectMalformedCapturedLeaseFailsClosedBeforeWritingOrClearingLease(
+    directoryName: String,
+    capturedFans: [CapturedFanState],
+    restoreReason: String,
+    expectedMessage: String
+) throws {
+    let smc = FakeSMC.mac165()
+    let store = FanLeaseStore(directory: temporaryDirectory(directoryName))
+    let lease = try installBoostedLeaseState(smc: smc, store: store, capturedFans: capturedFans)
+    let controller = restoreController(smc: smc, store: store)
+
+    try expectThrows("restore should reject \(restoreReason) before writes", {
+        _ = try controller.restoreAuto(reason: restoreReason)
+    }, matching: { error in
+        guard case .restoreFailed(let message) = error as? FanControlError else { return false }
+        return message.contains(expectedMessage)
+    })
+
+    try expect(smc.writes.isEmpty, "\(restoreReason) restore should not write hardware")
+    try expect(try store.readIfPresent() == lease, "\(restoreReason) restore should not clear lease")
 }
 
 @discardableResult
@@ -2215,6 +2288,11 @@ let tests: [(String, () throws -> Void)] = [
     ("Restore missing captured fan fails closed before writing or clearing lease", testRestoreMissingCapturedFanFailsClosedBeforeWritingOrClearingLease),
     ("Restore empty captured target fails closed before writing or clearing lease", testRestoreEmptyCapturedTargetFailsClosedBeforeWritingOrClearingLease),
     ("Restore NaN captured target fails closed before writing or clearing lease", testRestoreNaNCapturedTargetFailsClosedBeforeWritingOrClearingLease),
+    ("Restore above-maximum captured target fails closed before writing or clearing lease", testRestoreAboveMaximumCapturedTargetFailsClosedBeforeWritingOrClearingLease),
+    ("Restore negative captured target fails closed before writing or clearing lease", testRestoreNegativeCapturedTargetFailsClosedBeforeWritingOrClearingLease),
+    ("Restore below-minimum nonzero captured target fails closed before writing or clearing lease", testRestoreBelowMinimumNonzeroCapturedTargetFailsClosedBeforeWritingOrClearingLease),
+    ("Restore empty captured mode fails closed before writing or clearing lease", testRestoreEmptyCapturedModeFailsClosedBeforeWritingOrClearingLease),
+    ("Restore manual captured mode fails closed before writing or clearing lease", testRestoreManualCapturedModeFailsClosedBeforeWritingOrClearingLease),
     ("Restore converges from partial rollback state", testRestoreConvergesFromPartialRollbackState),
     ("Restore audits rejected writes before throwing", testRestoreAuditsRejectedWritesBeforeThrowing)
 ]
