@@ -117,17 +117,36 @@ Observed on `Mac16,5` / M4 Max / platform `j616c`:
 | `FS! ` | unavailable | unavailable |
 | `RPlt` | `j616c` | `0x6A36313663000000` |
 
-Interpretation for M4:
+Interpretation for local M4:
 
 - `F{n}Md = 3` appears to be Apple/system-controlled state.
-- `F{n}Md = 1` is the expected manual-control state based on ThermalForge prior
-  art, but must be verified locally before enabling active control.
-- `F{n}Md = 0` is the expected auto-restore state based on ThermalForge prior
-  art, but must be verified locally before enabling active control.
-- `Ftst = 1` is the expected M1-M4 unlock step based on ThermalForge prior art.
+- `F{n}Md = 1` is manual-control state.
+- `F{n}Md = 0` is a release/intermediate state. After restore settles, local
+  hardware returned to `3`.
+- `Ftst = 1` is the M1-M4 unlock step. Readback is delayed and must be polled.
 - `Ftst = 0` is the expected restore step.
 - `F{n}Tg = 0` was observed while fans were system controlled. Treat this as
   "no manual target exposed", not proof that Apple's desired fan speed is zero.
+
+## Hardware Validation Run
+
+Validated on local `Mac16,5` / M4 Max / `j616c` with a one-shot scratch probe.
+
+Observed behavior:
+
+- `Ftst = 1` accepted with SMC result `0`, but readback changed only after
+  repeated writes/polling.
+- While unlocked but not manual, requested `F{n}Tg = F{n}Mx` did not stick.
+  Targets settled to safe nonzero/minimum values.
+- `F{n}Md = 1` initially returned SMC result `0x82`, then eventually accepted.
+- After mode readback `1`, `F{n}Tg = F{n}Mx` stuck.
+- Actual RPM reached boost threshold:
+  - fan 0: `5505 RPM`
+  - fan 1: `5199 RPM`
+  - threshold: `0.85 * 5777 = 4910 RPM`
+- Restore required polling `Ftst = 0`.
+- After restore, mode first read `0`; after a short settle window it returned to
+  `3`, target `0`, actual `0`.
 
 ## Value Encoding
 
@@ -206,13 +225,18 @@ For each allowlisted model:
    lease owns it.
 5. Validate each `Mn > 0`, `Mx > Mn`, and `Mx <= 10000`.
 6. Create a lease marker on disk before writing.
-7. If `Ftst` exists, write `Ftst = 1`.
-8. Write each fan mode key to manual: expected value `1`.
-9. For each fan, write `F{n}Tg = F{n}Mx`.
-10. Poll actual RPM for up to 30 seconds.
-11. Consider boost verified when every fan's actual RPM is at least
+7. If `Ftst` exists, write `Ftst = 1` and poll until readback is `1`.
+8. Request `F{n}Tg = F{n}Mx` while not manual.
+9. Before manual mode, require every target to read back at least `0.95 * Mn`.
+   On local M4, max target did not stick until manual mode.
+10. Retry each fan mode key to manual `1` until write succeeds and readback is
+    `1`.
+11. After manual readback, write `F{n}Tg = F{n}Mx` and poll until target
+    readback matches max.
+12. Poll actual RPM for up to 30 seconds.
+13. Consider boost verified when every fan's actual RPM is at least
    `0.85 * maxRPM`.
-12. Keep heartbeat active until lease ends or workload exits.
+14. Keep heartbeat active until lease ends or workload exits.
 
 If any step fails, immediately call `restoreAuto("boost failed")`.
 
@@ -222,18 +246,19 @@ Restore must be safe to call repeatedly.
 
 For each fan:
 
-1. Write mode key to auto: expected value `0`.
-2. Restore the captured pre-boost target bytes.
-3. If the captured target was `0`, write `F{n}Tg = 0` as the clear-manual-target
-   operation.
+1. Keep or rewrite `F{n}Tg = F{n}Mx` as a safe high target before release.
+2. Write mode key to release: expected command value `0`.
 
 Then:
 
-1. If `Ftst` exists, write `Ftst = 0`.
-2. Re-read mode, target, and actual RPM.
-3. Restore is verified if mode is `0` or returns to known system state, and
-   target is either the captured target or the model's validated clear value.
-4. Clear the lease marker only after restore is verified.
+1. If `Ftst` exists, write `Ftst = 0` and poll until readback is `0`.
+2. Poll until every fan mode is not manual.
+3. Restore captured target bytes. If the captured target was `0`, write
+   `F{n}Tg = 0` only after non-manual readback.
+4. Re-read mode, target, and actual RPM through a settle window.
+5. Restore is verified when no fan is manual, `Ftst = 0`, and target/actual RPM
+   return to the model's managed idle state.
+6. Clear the lease marker only after restore is verified.
 
 If restore cannot be verified, leave the marker in place and print a clear
 manual recovery command once such a command exists.
@@ -272,6 +297,8 @@ Restore auto on:
 - Active control requires a model allowlist entry.
 - Active control requires explicit user opt-in.
 - Do not write any key outside the required fan-control key set.
+- Do not treat immediate readback as authoritative for mode, target, or `Ftst`;
+  use retry/poll windows.
 - Never set a manual target below `F{n}Mn`.
 - Never set a manual target above `F{n}Mx`.
 - `F{n}Tg = 0` is allowed only during auto restore, after mode is no longer
@@ -305,20 +332,31 @@ keys:
   mode: "F{n}Md"
   unlock: Ftst
 values:
-  manual_mode: 1
-  auto_mode: 0
-  observed_system_mode: 3
+  manual_command: 1
+  release_command: 0
+  managed_observed_state: 3
   target_clear: 0
   unlock_on: 1
   unlock_off: 0
+strategy:
+  unlock: ftst_delayed_retry
+  pre_manual_target: require_nonzero_minimum
+  manual: retry_until_readback
+  target_max: after_manual_readback
+  restore: release_then_ftst_off_then_clear_target
 validation:
   read: verified
-  boost_max: unverified
-  restore_auto: unverified
-  target_clear: unverified
+  boost_max_one_shot: verified
+  restore_auto_one_shot: verified
+  target_clear_after_non_manual: verified
+  crash_recovery: unverified
+  sleep_wake_recovery: unverified
 active_control:
   enabled: false
 ```
+
+Keep `active_control.enabled: false` until crash and sleep/wake recovery are
+verified. One-shot max/restore is hardware-validated for `Mac16,5`.
 
 Set `active_control.enabled: true` only after local hardware validation proves:
 
@@ -358,6 +396,8 @@ Required before enabling active writes:
 - Unit tests for target clamping.
 - Unit tests for mode-key detection.
 - Unit tests for `Ftst` present/absent paths.
+- Unit tests for delayed readback polling.
+- Unit tests that target clear is impossible while mode reads manual.
 - Unit tests for lease expiry.
 - Unit tests for stale marker recovery.
 - Integration tests against a fake SMC backend.
