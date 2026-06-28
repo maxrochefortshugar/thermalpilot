@@ -1704,6 +1704,38 @@ func testRestoreClearsLeaseOnlyAfterManagedSettle() throws {
     try expect(restoreHardwareSettled(smc), "restore should leave hardware in managed settled state")
 }
 
+func testRestoreMac177ClearsLeaseAfterManagedModeWithoutTargetSettle() throws {
+    let smc = FakeSMC.mac177()
+    let capability = FanCapability.mac177M5MaxLowercaseMode.withValidation(validationState())
+    let store = FanLeaseStore(directory: temporaryDirectory("restore-mac177-managed-mode"))
+    let maxBytes = FanEncoding.float32LittleEndian(7_826)
+    for fan in 0..<capability.fanCount {
+        smc.setRawEntryBytes("F\(fan)md", [capability.manualCommand])
+        smc.setRawEntryBytes("F\(fan)Tg", maxBytes)
+        smc.setRawEntryBytes("F\(fan)Ac", maxBytes)
+    }
+    let lease = testLease(
+        capabilityFingerprint: capability.fingerprint,
+        phase: .boosted,
+        capturedFans: (0..<capability.fanCount).map {
+            CapturedFanState(index: $0, modeRaw: [capability.managedObservedState], targetRaw: FanEncoding.float32LittleEndian(0))
+        }
+    )
+    try store.claim(lease)
+    smc.clearWrites()
+    let controller = restoreController(smc: smc, store: store, capability: capability)
+
+    let result = try controller.restoreAuto(reason: "test M5 restore")
+
+    try expect(result.restored, "M5 restore should report restored")
+    try expect(result.finalModes == [capability.managedObservedState, capability.managedObservedState], "M5 restore should return final managed modes")
+    try expect(result.finalTargets.allSatisfy { $0 > 0 && $0 < 7_826 }, "M5 restore should allow Apple-managed nonzero targets")
+    try expect(try store.readIfPresent() == nil, "M5 restore should clear lease once managed mode is restored")
+    try expect(!smc.writes.contains { $0.operation == .target(fan: 0, bytes: FanEncoding.float32LittleEndian(0)) }, "M5 restore should not force captured fan 0 target")
+    try expect(!smc.writes.contains { $0.operation == .target(fan: 1, bytes: FanEncoding.float32LittleEndian(0)) }, "M5 restore should not force captured fan 1 target")
+    try expect(!smc.writes.contains { $0.key == "Ftst" }, "M5 restore should not write Ftst")
+}
+
 func testAutoNoopsWhenNoLeaseExists() throws {
     let smc = FakeSMC.mac165()
     let store = FanLeaseStore(directory: temporaryDirectory("restore-no-lease-noop"))
@@ -2348,6 +2380,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Restore uses captured lease targets not current targets", testRestoreUsesCapturedLeaseTargetsNotCurrentTargets),
     ("Restore never clears target while manual", testRestoreNeverClearsTargetWhileManual),
     ("Restore clears lease only after managed settle", testRestoreClearsLeaseOnlyAfterManagedSettle),
+    ("Restore Mac17,7 clears lease after managed mode without target settle", testRestoreMac177ClearsLeaseAfterManagedModeWithoutTargetSettle),
     ("Restore noops when no lease exists", testAutoNoopsWhenNoLeaseExists),
     ("Restore recovery mode requires lease", testRestoreRecoveryModeRequiresLease),
     ("Restore fingerprint mismatch does not write or clear lease", testRestoreFingerprintMismatchDoesNotWriteOrClearLease),

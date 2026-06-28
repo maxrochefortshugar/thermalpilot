@@ -15,6 +15,11 @@ visible in `F{n}Tg` while the fan remains in managed mode. The active path still
 requests max target before manual mode, but it does not require that target to
 read back until after lowercase manual mode is visible.
 
+After `auto`, `F0md` and `F1md` return to managed mode (`0`), but Apple's
+managed controller may continue to publish nonzero `F{n}Tg` values while cooling
+down. The M5 restore path treats managed mode as the restore boundary and does
+not force or wait for captured target bytes to reappear.
+
 Observed pre-boost inventory:
 
 | Key | Value | Raw |

@@ -198,12 +198,14 @@ package final class FanController {
         try pollNoManualModes(snapshot)
         try pollManagedModes(snapshot)
 
-        for fan in snapshot.fans {
-            let targetRaw = capturedTargets[fan.index]!
-            try write(.target(fan: fan.index, bytes: targetRaw), lease: lease, reason: "restore captured target: \(reason)")
-        }
+        if capability.unlockAvailable {
+            for fan in snapshot.fans {
+                let targetRaw = capturedTargets[fan.index]!
+                try write(.target(fan: fan.index, bytes: targetRaw), lease: lease, reason: "restore captured target: \(reason)")
+            }
 
-        try pollManagedSettle(snapshot: snapshot, capturedTargets: capturedTargets)
+            try pollManagedSettle(snapshot: snapshot, capturedTargets: capturedTargets)
+        }
         let finalStatus = try status()
         try leaseStore.clear(leaseID: lease.id)
         return FanRestoreResult(

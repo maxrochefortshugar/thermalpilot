@@ -187,6 +187,9 @@ final class FakeSMC: FanHardware {
                     releaseSettledFans.remove(fan)
                     pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0], releaseSettledFan: nil))
                     pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [capability.managedObservedState], releaseSettledFan: fan))
+                    if !capability.unlockAvailable {
+                        pending.append((applyAt: tick + 2, key: try capability.targetKey(for: fan).stringValue, bytes: managedTargetBytes(fan: fan), releaseSettledFan: nil))
+                    }
                 } else {
                     pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0], releaseSettledFan: nil))
                     pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [capability.managedObservedState], releaseSettledFan: nil))
@@ -291,6 +294,12 @@ final class FakeSMC: FanHardware {
         let safeFloor = max(minimum * capability.preManualMinimumMultiplier, 1)
         let safeTarget = min(safeFloor, maximum.nextDown)
         return FanEncoding.float32LittleEndian(safeTarget)
+    }
+
+    private func managedTargetBytes(fan: Int) -> [UInt8] {
+        let minimum = FanEncoding.floatValue(entries["F\(fan)Mn"]?.bytes ?? []) ?? 1
+        let maximum = FanEncoding.floatValue(entries["F\(fan)Mx"]?.bytes ?? []) ?? max(minimum + 1, 2)
+        return FanEncoding.float32LittleEndian(min(maximum * 0.7, max(minimum, maximum.nextDown)))
     }
 
     private func simulateRamp() {
