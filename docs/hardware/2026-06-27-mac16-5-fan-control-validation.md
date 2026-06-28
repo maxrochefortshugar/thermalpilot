@@ -7,7 +7,8 @@ macOS: Version 26.5.1 (Build 25F80)
 
 ## Result
 
-One-shot max boost and restore succeeded.
+One-shot max boost and restore succeeded. The current `coldfront` executable
+enables manual `boost` and `auto` on this exact model/platform.
 
 ## Observed Sequence
 
@@ -20,14 +21,23 @@ One-shot max boost and restore succeeded.
 
 ## Still Unverified
 
-- Crash recovery.
-- Sleep/wake recovery.
-- Parent process death recovery.
-- Missed-heartbeat recovery.
-- Lease-expiry recovery.
-- Signal handling recovery.
+- Background daemon recovery.
+- Sleep/wake recovery invoked by a daemon.
+- Parent process death recovery invoked by a daemon.
+- Missed-heartbeat recovery invoked by a daemon.
+- Lease-expiry recovery invoked by a daemon.
+- Signal handling around a future workload wrapper.
 - Long-running workload wrapper.
 
 ## Active Control Decision
 
-Keep `activeControlEnabled=false` until every recovery flag in `FanValidationState` is validated on hardware.
+Manual active control is enabled for `Mac16,5` / `j616c` in the current CLI.
+There is no daemon yet, so the supported operator flow is:
+
+```sh
+sudo coldfront boost --for 10m -y
+sudo coldfront auto
+```
+
+The static capability keeps daemon-oriented recovery flags separate from the
+manual flow so future recovery work can be validated explicitly.

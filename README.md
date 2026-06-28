@@ -1,16 +1,15 @@
 # Coldfront
 
-Coldfront is a macOS fan and thermal probe with guarded fan-control validation
-for Apple Silicon Macs.
+Coldfront is an open source macOS fan and thermal tool.
 
-The first release focuses on trustworthy telemetry: fan count, current/min/max
-RPM, selected temperature sensors, selected power sensors, and explicit SMC key
-reads with raw bytes for auditability. Active fan control is opt-in and records
+Telemetry is the default path: fan count, current/min/max RPM, selected
+temperature sensors, selected power sensors, and explicit SMC key reads with raw
+bytes for auditability. Active fan control is explicit, sudo-gated, and records
 a lease before changing fan state so `auto` can restore Apple's managed control.
 
-The longer-term goal is a native open source thermal assistant for Apple
-Silicon machines: boost fans before local AI inference or other heavy work,
-then restore Apple's automatic fan control.
+The current active mode is deliberately simple: boost validated Apple Silicon
+fans to maximum before heavy local work, then restore Apple's automatic fan
+control when the work is done.
 
 ## Status
 
@@ -18,14 +17,14 @@ then restore Apple's automatic fan control.
 - Apple Silicon tested on `Mac16,5` / M4 Max
 - read-only SMC telemetry by default
 - bounded 10-second hardware validation command
-- manual max boost and auto restore on validated hardware
+- manual max boost and auto restore on validated `Mac16,5` hardware
 - no workload wrapper yet
 - no background daemon
 - no sudo requirement for telemetry reads
 
 `boost` leaves fans at maximum until you run `auto`. There is no background
-daemon yet; if you forget to restore, the failure mode is noisy fans rather than
-silent heat buildup.
+daemon yet. If you forget to restore, the intended failure mode is noisy fans
+rather than silent heat buildup.
 
 ## Build
 
@@ -51,13 +50,13 @@ Check the guarded active-control status:
 .build/release/coldfront status --json
 ```
 
-Run the bounded validation path:
+Run the bounded validation path. Validation always restores automatically:
 
 ```sh
 sudo .build/release/coldfront validate --for 10s -y
 ```
 
-Boost fans to maximum:
+Boost fans to maximum. This remains active until `auto` is run:
 
 ```sh
 sudo .build/release/coldfront boost --for 10m -y
@@ -114,14 +113,15 @@ The C read bridge only supports:
 The active write stack uses package-scoped typed operations, not raw public SMC
 writes. `boost` creates a lease before its first write. `auto` restores from
 that captured lease and clears the lease only after managed mode and targets
-settle.
+settle. Active commands are model/platform allowlisted; unsupported machines
+fail closed before writes.
 
 ## Roadmap
 
 - Improve sensor labeling for Apple Silicon models.
 - Add a compact menu-bar or terminal dashboard.
 - Record bounded local thermal history.
-- Add a workload wrapper for local inference and other heavy commands.
+- Consider workload integration after the manual `boost`/`auto` path is stable.
 - Keep all active fan-control work opt-in and auditable.
 
 ## License
