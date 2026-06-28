@@ -221,12 +221,13 @@ func testDisabledStatusJSONResponseIsParseable() throws {
     )
 }
 
-func testControlExecutableStatusJSONReportsDisabledFlags() throws {
+func testControlExecutableStatusJSONReportsEnabledFlags() throws {
     let result = try runColdfrontExecutable(["status", "--json"])
 
     try expect(result.exitCode == 0, "executable status --json should exit zero")
     let object = try JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any]
-    try expect(object?["model"] as? String == "Mac16,5", "executable status JSON should include model")
+    let model = object?["model"] as? String
+    try expect(model == "Mac16,5" || model == "Mac17,7", "executable status JSON should include an allowlisted model")
     try expect(object?["activeControlEnabled"] as? Bool == true, "executable status JSON should enable active control for validated hardware")
     try expect(object?["boostExecutionEnabled"] as? Bool == true, "executable status JSON should enable boost execution")
     try expect(object?["recoveryExecutionEnabled"] as? Bool == true, "executable status JSON should enable recovery execution")
@@ -367,6 +368,20 @@ func testMac165Capability() throws {
     try expect(FanEncoding.float32LittleEndian(5777) == [0x00, 0x88, 0xB4, 0x45], "max RPM bytes should match hardware log")
 }
 
+func testMac177Capability() throws {
+    let capability = FanCapability.mac177M5MaxLowercaseMode
+    let mode0 = try capability.modeKey(for: 0)
+    let target1 = try capability.targetKey(for: 1)
+
+    try expect(capability.model == "Mac17,7", "model should match local M5 validation")
+    try expect(capability.platform == "j714c", "platform should match local M5 validation")
+    try expect(capability.fanCount == 2, "fan count should match local M5 validation")
+    try expect(mode0.stringValue == "F0md", "M5 mode key should use lowercase md")
+    try expect(target1.stringValue == "F1Tg", "target key should format fan index")
+    try expect(capability.unlockAvailable == false, "M5 path should not require Ftst")
+    try expect(capability.managedObservedState == 0, "M5 managed state should match lowercase mode reads")
+}
+
 func testResolverSucceedsForValidatedMac165Inventory() throws {
     let resolver = try FanCapabilityResolver(hardware: fakeFanInventory(), hostModel: { "Mac16,5" })
 
@@ -377,6 +392,18 @@ func testResolverSucceedsForValidatedMac165Inventory() throws {
     try expect(capability.fanCount == 2, "resolver should preserve fan count")
     try expect(capability.modeKeyFormat == "F%dMd", "resolver should preserve uppercase mode key")
     try expect(capability.unlockAvailable, "resolver should require Ftst for validated capability")
+}
+
+func testResolverSucceedsForValidatedMac177Inventory() throws {
+    let resolver = try FanCapabilityResolver(hardware: fakeMac177FanInventory(), hostModel: { "Mac17,7" })
+
+    let capability = try resolver.resolve()
+
+    try expect(capability.model == "Mac17,7", "resolver should return Mac17,7 capability")
+    try expect(capability.platform == "j714c", "resolver should return M5 platform")
+    try expect(capability.fanCount == 2, "resolver should preserve M5 fan count")
+    try expect(capability.modeKeyFormat == "F%dmd", "resolver should preserve lowercase mode key")
+    try expect(capability.unlockAvailable == false, "resolver should preserve no-unlock M5 path")
 }
 
 func testResolverRejectsWrongModel() throws {
@@ -518,6 +545,20 @@ func testStatusAllRecoveryFlagsAndGoodHardwareAllowsActiveControl() throws {
 
     try expect(status.activeAvailability.allowed, "fully validated good FakeSMC hardware should allow active control")
     try expect(status.activeAvailability.reasons.isEmpty, "fully validated good FakeSMC hardware should not report availability reasons")
+}
+
+func testStatusMac177DoesNotRequireFtstForActiveControl() throws {
+    let smc = FakeSMC.mac177()
+    let capability = FanCapability.mac177M5MaxLowercaseMode.withValidation(validationState())
+    let controller = FanController(hardware: smc, capability: capability, clock: TestClock())
+
+    let status = try controller.status()
+
+    try expect(status.platform == "j714c", "status should read M5 platform")
+    try expect(status.ftst == nil, "M5 no-unlock path should not report Ftst")
+    try expect(status.fans.map(\.mode) == [0, 0], "status should read lowercase M5 mode keys")
+    try expect(status.activeAvailability.allowed, "fully validated M5 no-unlock hardware should allow active control")
+    try expect(status.activeAvailability.reasons.isEmpty, "M5 no-unlock status should not report availability reasons")
 }
 
 func testStatusReportsPlatformMismatchAvailabilityReason() throws {
@@ -2175,7 +2216,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Coldfront executable dispatches boost and auto to controller", testColdfrontExecutableDispatchesBoostAndAutoToController),
     ("Disabled active-control response fails boost command", testActiveControlResponseFailsBoostCommandWhenExplicitlyDisabled),
     ("Disabled status JSON response is parseable", testDisabledStatusJSONResponseIsParseable),
-    ("Coldfront executable status JSON reports disabled flags", testControlExecutableStatusJSONReportsDisabledFlags),
+    ("Coldfront executable status JSON reports enabled flags", testControlExecutableStatusJSONReportsEnabledFlags),
     ("README documents boost and auto commands", testReadmeDocumentsBoostAndAutoCommands),
     ("CLI parses bounded boost duration", testCLIParsesBoundedBoostDuration),
     ("CLI parses status JSON", testCLIParsesStatusJSON),
@@ -2190,7 +2231,9 @@ let tests: [(String, () throws -> Void)] = [
     ("CLI rejects zero duration", testCLIRejectsZeroDuration),
     ("CLI rejects negative duration", testCLIRejectsNegativeDuration),
     ("Mac16,5 capability", testMac165Capability),
+    ("Mac17,7 capability", testMac177Capability),
     ("Resolver succeeds for validated Mac16,5 inventory", testResolverSucceedsForValidatedMac165Inventory),
+    ("Resolver succeeds for validated Mac17,7 inventory", testResolverSucceedsForValidatedMac177Inventory),
     ("Resolver rejects wrong model", testResolverRejectsWrongModel),
     ("Resolver rejects wrong platform", testResolverRejectsWrongPlatform),
     ("Resolver rejects fan count mismatch", testResolverRejectsFanCountMismatch),
@@ -2203,6 +2246,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Status missing Ftst keeps status but blocks active control", testStatusMissingFtstKeepsStatusButBlocksActiveControl),
     ("Status invalid Ftst keeps status but blocks active control", testStatusInvalidFtstKeepsStatusButBlocksActiveControl),
     ("Status all recovery flags and good hardware allows active control", testStatusAllRecoveryFlagsAndGoodHardwareAllowsActiveControl),
+    ("Status Mac17,7 does not require Ftst for active control", testStatusMac177DoesNotRequireFtstForActiveControl),
     ("Status reports platform mismatch availability reason", testStatusReportsPlatformMismatchAvailabilityReason),
     ("Status reports fan count mismatch without reading absent extra fans", testStatusReportsFanCountMismatchWithoutReadingAbsentExtraFans),
     ("Status reports every validation gate reason", testStatusReportsEveryValidationGateReason),

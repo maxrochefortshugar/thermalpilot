@@ -51,6 +51,23 @@ final class FakeSMC: FanHardware {
         ])
     }
 
+    static func mac177() -> FakeSMC {
+        FakeSMC(entries: [
+            "FNum": Entry(type: "ui8 ", size: 1, attributes: 0, bytes: [2]),
+            "RPlt": Entry(type: "ch8*", size: 8, attributes: 0, bytes: Array("j714c".utf8) + [0, 0, 0]),
+            "F0Ac": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(0)),
+            "F0Mn": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(2_317)),
+            "F0Mx": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(7_826)),
+            "F0Tg": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(0)),
+            "F0md": Entry(type: "ui8 ", size: 1, attributes: 0, bytes: [0]),
+            "F1Ac": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(0)),
+            "F1Mn": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(2_317)),
+            "F1Mx": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(7_826)),
+            "F1Tg": Entry(type: "flt ", size: 4, attributes: 0, bytes: FanEncoding.float32LittleEndian(0)),
+            "F1md": Entry(type: "ui8 ", size: 1, attributes: 0, bytes: [0])
+        ])
+    }
+
     func advanceTick() {
         tick += 1
         let ready = pending.filter { $0.applyAt <= tick }
