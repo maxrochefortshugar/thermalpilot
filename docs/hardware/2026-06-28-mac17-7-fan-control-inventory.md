@@ -10,6 +10,11 @@ the M5 lowercase mode keys. Unlike the existing `Mac16,5` path, this inventory
 does not expose a readable `Ftst` unlock key, so the capability skips the
 unlock/lock step and writes only typed fan mode and target operations.
 
+On this hardware, a pre-manual target write can be accepted without becoming
+visible in `F{n}Tg` while the fan remains in managed mode. The active path still
+requests max target before manual mode, but it does not require that target to
+read back until after lowercase manual mode is visible.
+
 Observed pre-boost inventory:
 
 | Key | Value | Raw |

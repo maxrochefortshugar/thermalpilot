@@ -1587,6 +1587,38 @@ func testBoostUsesHardwareValidatedSequence() throws {
     try expect(logger.events.allSatisfy { $0.leaseID == lease.id }, "boost write audit events should include the lease id")
 }
 
+func testBoostUsesMac177LowercaseModeSequenceWithoutPreManualReadback() throws {
+    let smc = FakeSMC.mac177()
+    let store = FanLeaseStore(directory: temporaryDirectory("boost-mac177-sequence"))
+    let clock = TestClock(onSleep: { smc.advanceTick() })
+    let logger = InMemoryFanControlLogger()
+    let capability = FanCapability.mac177M5MaxLowercaseMode.withValidation(validationState())
+    let controller = boostController(smc: smc, store: store, capability: capability, clock: clock, logger: logger)
+
+    let result = try controller.boostMax(leaseSeconds: 60, reason: "test M5 sequence")
+    let lease = try store.read()
+
+    try expect(result.leaseID == lease.id, "M5 boost result should identify active lease")
+    try expect(result.verified, "M5 boost should report verified ramp")
+    try expect(result.maxActualRPM >= 7_826 * capability.boostVerificationMultiplier, "M5 boost should observe actual RPM above verification threshold")
+
+    let expectedPrefix: [FanWriteOperation] = [
+        .target(fan: 0, bytes: FanEncoding.float32LittleEndian(7_826)),
+        .target(fan: 1, bytes: FanEncoding.float32LittleEndian(7_826)),
+        .mode(fan: 0, value: capability.manualCommand),
+        .mode(fan: 1, value: capability.manualCommand),
+        .target(fan: 0, bytes: FanEncoding.float32LittleEndian(7_826)),
+        .target(fan: 1, bytes: FanEncoding.float32LittleEndian(7_826))
+    ]
+    try expect(Array(smc.writes.prefix(expectedPrefix.count)).map(\.operation) == expectedPrefix, "M5 boost should use target/manual/max sequence without Ftst")
+    try expect(try smc.read(try FanKey("F0md")).bytes == [capability.manualCommand], "M5 boost should poll fan 0 lowercase manual readback")
+    try expect(try smc.read(try FanKey("F1md")).bytes == [capability.manualCommand], "M5 boost should poll fan 1 lowercase manual readback")
+    try expect(try smc.read(try FanKey("F0Tg")).bytes == FanEncoding.float32LittleEndian(7_826), "M5 boost should confirm fan 0 max target after manual")
+    try expect(try smc.read(try FanKey("F1Tg")).bytes == FanEncoding.float32LittleEndian(7_826), "M5 boost should confirm fan 1 max target after manual")
+    try expect(!logger.events.contains { $0.key == "Ftst" }, "M5 boost should not write Ftst")
+    try expect(logger.events.map(\.key) == smc.writes.map(\.key), "M5 boost should audit every hardware write")
+}
+
 func testBoostRefusesWhenActiveControlDisabled() throws {
     let smc = FakeSMC.mac165()
     let store = FanLeaseStore(directory: temporaryDirectory("boost-active-control-disabled"))
@@ -2311,6 +2343,7 @@ let tests: [(String, () throws -> Void)] = [
     ("Boost refuses preexisting unlock before lease claim", testBoostRefusesPreexistingUnlockBeforeLeaseClaim),
     ("Boost audits and rejects nonzero kernReturn before rollback", testBoostAuditsAndRejectsNonzeroKernReturnBeforeRollback),
     ("Boost uses hardware validated sequence", testBoostUsesHardwareValidatedSequence),
+    ("Boost uses Mac17,7 lowercase mode sequence without pre-manual readback", testBoostUsesMac177LowercaseModeSequenceWithoutPreManualReadback),
     ("Boost refuses when active control disabled", testBoostRefusesWhenActiveControlDisabled),
     ("Restore uses captured lease targets not current targets", testRestoreUsesCapturedLeaseTargetsNotCurrentTargets),
     ("Restore never clears target while manual", testRestoreNeverClearsTargetWhileManual),

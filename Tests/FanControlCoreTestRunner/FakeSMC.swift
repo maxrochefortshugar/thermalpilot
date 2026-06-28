@@ -164,10 +164,12 @@ final class FakeSMC: FanHardware {
 
         if case .mode(_, let value) = operation {
             if value == capability.manualCommand {
-                guard entries["Ftst"]?.bytes == [capability.unlockOn],
-                      allFansHaveSafePreManualTargetReadback(capability: capability)
-                else {
-                    return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+                if capability.unlockAvailable {
+                    guard entries["Ftst"]?.bytes == [capability.unlockOn],
+                          allFansHaveSafePreManualTargetReadback(capability: capability)
+                    else {
+                        return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
+                    }
                 }
             } else if value != capability.releaseCommand {
                 return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
@@ -179,15 +181,15 @@ final class FakeSMC: FanHardware {
             return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
         }
 
-        if key.stringValue.hasSuffix("Md") {
+        if case .mode = operation {
             if case .mode(_, 0) = operation {
                 if case .mode(let fan, _) = operation {
                     releaseSettledFans.remove(fan)
                     pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0], releaseSettledFan: nil))
-                    pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [3], releaseSettledFan: fan))
+                    pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [capability.managedObservedState], releaseSettledFan: fan))
                 } else {
                     pending.append((applyAt: tick + 2, key: key.stringValue, bytes: [0], releaseSettledFan: nil))
-                    pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [3], releaseSettledFan: nil))
+                    pending.append((applyAt: tick + 4, key: key.stringValue, bytes: [capability.managedObservedState], releaseSettledFan: nil))
                 }
             } else {
                 if case .mode(let fan, _) = operation {
@@ -199,18 +201,21 @@ final class FakeSMC: FanHardware {
         }
 
         if case .target(let fan, _) = operation {
-            if entries["F\(fan)Md"]?.bytes != [capability.manualCommand] {
+            let modeKey = try capability.modeKey(for: fan).stringValue
+            if entries[modeKey]?.bytes != [capability.manualCommand] {
                 if validManagedTargetClear(bytes, fan: fan, capability: capability) {
                     releaseSettledFans.remove(fan)
-                } else if validPreManualTargetRequest(bytes, fan: fan, capability: capability) {
+                } else if capability.unlockAvailable && validPreManualTargetRequest(bytes, fan: fan, capability: capability) {
                     pending.append((applyAt: tick + 2, key: key.stringValue, bytes: preManualTargetGuardBytes(fan: fan, capability: capability), releaseSettledFan: nil))
+                    return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
+                } else if !capability.unlockAvailable && validPreManualTargetRequest(bytes, fan: fan, capability: capability) {
                     return record(operation, key: key, bytes: bytes, reason: reason, result: 0)
                 } else {
                     return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
                 }
             }
 
-            if entries["F\(fan)Md"]?.bytes == [capability.manualCommand] {
+            if entries[modeKey]?.bytes == [capability.manualCommand] {
                 guard validManualTarget(bytes, fan: fan) else {
                     return record(operation, key: key, bytes: bytes, reason: reason, result: 0x82)
                 }
@@ -247,8 +252,9 @@ final class FakeSMC: FanHardware {
     }
 
     private func validManagedTargetClear(_ bytes: [UInt8], fan: Int, capability: FanCapability) -> Bool {
+        let modeKey = (try? capability.modeKey(for: fan).stringValue) ?? "F\(fan)Md"
         guard releaseSettledFans.contains(fan),
-              entries["F\(fan)Md"]?.bytes == [capability.managedObservedState],
+              entries[modeKey]?.bytes == [capability.managedObservedState],
               let target = FanEncoding.floatValue(bytes)
         else { return false }
         return target == 0
@@ -289,7 +295,8 @@ final class FakeSMC: FanHardware {
 
     private func simulateRamp() {
         for index in 0..<2 {
-            guard let mode = entries["F\(index)Md"]?.bytes.first,
+            let mode = entries["F\(index)Md"]?.bytes.first ?? entries["F\(index)md"]?.bytes.first
+            guard let mode,
                   let target = FanEncoding.floatValue(entries["F\(index)Tg"]?.bytes ?? []),
                   let minimum = FanEncoding.floatValue(entries["F\(index)Mn"]?.bytes ?? [])
             else { continue }
@@ -298,7 +305,7 @@ final class FakeSMC: FanHardware {
 
             if mode == 1, target > 0 {
                 entries[actualKey]?.bytes = FanEncoding.float32LittleEndian(min(target, current + 2_000))
-            } else if mode == 3, target == 0, current > minimum {
+            } else if mode != 1, target == 0, current > minimum {
                 entries[actualKey]?.bytes = FanEncoding.float32LittleEndian(max(minimum, current - 2_000))
             }
         }
